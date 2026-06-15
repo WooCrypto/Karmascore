@@ -38,7 +38,7 @@ service cloud.firestore {
         incoming().username is string && 
         incoming().username.size() >= 3 && 
         incoming().username.size() <= 20 &&
-        incoming().karmaScore is int &&
+        (incoming().karmaScore is int || incoming().karmaScore is float) &&
         incoming().karmaScore >= 0 &&
         incoming().karmaScore <= 1000
       );
@@ -48,7 +48,7 @@ service cloud.firestore {
         incoming().username is string &&
         incoming().username.size() >= 3 &&
         incoming().username.size() <= 20 &&
-        incoming().karmaScore is int &&
+        (incoming().karmaScore is int || incoming().karmaScore is float) &&
         incoming().karmaScore >= 0 &&
         incoming().karmaScore <= 1000
       );
