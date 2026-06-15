@@ -15,7 +15,6 @@ export default function KarmaLogo({ size = 32, glow = true, className = '', ...p
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={`${className} select-none`}
-      referrerPolicy="no-referrer"
       {...props}
     >
       <defs>
