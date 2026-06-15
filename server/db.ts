@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, getDocs, collection } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, getDocs, collection, initializeFirestore } from 'firebase/firestore';
 
 // Load Firebase configuration
 const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -14,7 +14,24 @@ try {
 }
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true
+}, firebaseConfig.firestoreDatabaseId || '(default)');
+
+// Helper to wrap Firestore promises with a fast timeout fallback
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number = 3000): Promise<T> {
+  let timeoutId: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Firebase operation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -127,14 +144,14 @@ export async function createChallenge(address: string): Promise<string> {
   const challenge = crypto.randomUUID();
   const pathStr = `challenges/${normalized}`;
   try {
-    await setDoc(doc(db, 'challenges', normalized), {
+    await withTimeout(setDoc(doc(db, 'challenges', normalized), {
       address: normalized,
       challenge,
       createdAt: Date.now()
-    });
+    }), 2500);
     return challenge;
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, pathStr);
+    console.warn(`[DB WARNING] createChallenge failed or timed out: ${err instanceof Error ? err.message : String(err)}. Returning local challenge.`);
     return challenge;
   }
 }
@@ -144,16 +161,18 @@ export async function getChallenge(address: string): Promise<string | null> {
   const pathStr = `challenges/${normalized}`;
   try {
     const docRef = doc(db, 'challenges', normalized);
-    const snap = await getDoc(docRef);
+    const snap = await withTimeout(getDoc(docRef), 2500);
     if (!snap.exists()) return null;
     const data = snap.data();
     if (Date.now() - data.createdAt > 5 * 60 * 1000) {
-      await deleteDoc(docRef);
+      try {
+        await withTimeout(deleteDoc(docRef), 2500);
+      } catch (_) {}
       return null;
     }
     return data.challenge;
   } catch (err) {
-    handleFirestoreError(err, OperationType.GET, pathStr);
+    console.warn(`[DB WARNING] getChallenge failed or timed out: ${err instanceof Error ? err.message : String(err)}.`);
     return null;
   }
 }
@@ -169,11 +188,13 @@ export async function getChallengeRecord(address: string): Promise<ChallengeReco
   const pathStr = `challenges/${normalized}`;
   try {
     const docRef = doc(db, 'challenges', normalized);
-    const snap = await getDoc(docRef);
+    const snap = await withTimeout(getDoc(docRef), 2500);
     if (!snap.exists()) return null;
     const data = snap.data();
     if (Date.now() - data.createdAt > 5 * 60 * 1000) {
-      await deleteDoc(docRef);
+      try {
+        await withTimeout(deleteDoc(docRef), 2500);
+      } catch (_) {}
       return null;
     }
     return {
@@ -182,7 +203,7 @@ export async function getChallengeRecord(address: string): Promise<ChallengeReco
       createdAt: data.createdAt
     };
   } catch (err) {
-    handleFirestoreError(err, OperationType.GET, pathStr);
+    console.warn(`[DB WARNING] getChallengeRecord failed or timed out: ${err instanceof Error ? err.message : String(err)}.`);
     return null;
   }
 }
@@ -191,9 +212,9 @@ export async function clearChallenge(address: string): Promise<void> {
   const normalized = address.toLowerCase();
   const pathStr = `challenges/${normalized}`;
   try {
-    await deleteDoc(doc(db, 'challenges', normalized));
+    await withTimeout(deleteDoc(doc(db, 'challenges', normalized)), 2500);
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, pathStr);
+    console.warn(`[DB WARNING] clearChallenge failed or timed out: ${err instanceof Error ? err.message : String(err)}.`);
   }
 }
 
@@ -201,16 +222,16 @@ export async function clearChallenge(address: string): Promise<void> {
 export async function saveUserProfile(profile: UserProfile): Promise<void> {
   const pathStr = `profiles/${profile.address.toLowerCase()}`;
   try {
-    await setDoc(doc(db, 'profiles', profile.address.toLowerCase()), profile);
-    // Synced in cache
+    // Keep cached in-memory instantly to guarantee responsive operations
     setCachedScore(profile.address, profile);
+    await withTimeout(setDoc(doc(db, 'profiles', profile.address.toLowerCase()), profile), 2500);
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, pathStr);
+    console.warn(`[DB WARNING] saveUserProfile failed or timed out: ${err instanceof Error ? err.message : String(err)}. Falling back to in-memory caching.`);
   }
 }
 
 export async function getUserProfile(address: string): Promise<UserProfile | null> {
-  // Try Cache first
+  // Try Cache first to bypass network overhead
   const cached = getCachedScore(address);
   if (cached) {
     console.log(`[DB] In-Memory Cache HIT for wallet address: ${address}`);
@@ -220,13 +241,13 @@ export async function getUserProfile(address: string): Promise<UserProfile | nul
   console.log(`[DB] Cache MISS. Loading Firestore database record for: ${address}`);
   const pathStr = `profiles/${address.toLowerCase()}`;
   try {
-    const snap = await getDoc(doc(db, 'profiles', address.toLowerCase()));
+    const snap = await withTimeout(getDoc(doc(db, 'profiles', address.toLowerCase())), 2500);
     if (!snap.exists()) return null;
     const profile = snap.data() as UserProfile;
     setCachedScore(address, profile);
     return profile;
   } catch (err) {
-    handleFirestoreError(err, OperationType.GET, pathStr);
+    console.warn(`[DB WARNING] Loaded getUserProfile failed or timed out: ${err instanceof Error ? err.message : String(err)}. Operating with default state fallback.`);
     return null;
   }
 }
@@ -234,15 +255,19 @@ export async function getUserProfile(address: string): Promise<UserProfile | nul
 export async function getAllProfiles(): Promise<UserProfile[]> {
   const pathStr = 'profiles';
   try {
-    const snap = await getDocs(collection(db, 'profiles'));
+    const snap = await withTimeout(getDocs(collection(db, 'profiles')), 2500);
     const list: UserProfile[] = [];
     snap.forEach((doc) => {
       list.push(doc.data() as UserProfile);
     });
     return list;
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, pathStr);
-    return [];
+    console.warn(`[DB WARNING] getAllProfiles failed or timed out: ${err instanceof Error ? err.message : String(err)}. Returning active cached profiles.`);
+    const fallbackList: UserProfile[] = [];
+    cacheMap.forEach((cached) => {
+      fallbackList.push(cached.record);
+    });
+    return fallbackList;
   }
 }
 

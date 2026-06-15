@@ -181,7 +181,7 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
       // Sandbox Mode: Fallback to high-fidelity simulated production address
       const hexChars = '0123456789abcdef';
       let hexPart = '';
-      for (let i = 0; i < 36; i++) {
+      for (let i = 0; i < 40; i++) {
         hexPart += hexChars[Math.floor(Math.random() * 16)];
       }
       resolvedAddress = '0x' + hexPart; // produces a real formatted 42-character hex string
@@ -251,6 +251,22 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
       // Complete callback with real persistent backend profile data!
       setTimeout(() => {
         if (selectedWallet) {
+          try {
+            const registryRaw = localStorage.getItem('karma_profiles_registry');
+            const registry = registryRaw ? JSON.parse(registryRaw) : {};
+            registry[selectedWallet.id] = {
+              username: trimmed,
+              hideWallet,
+              address: resolvedAddress,
+              karmaScore: profile.karmaScore,
+              personality: profile.personality,
+              auraPoints: profile.auraPoints
+            };
+            localStorage.setItem('karma_profiles_registry', JSON.stringify(registry));
+          } catch (e) {
+            console.error('Failed to sync karma_profiles_registry', e);
+          }
+
           onConnect({
             wallet: selectedWallet,
             username: trimmed,
@@ -638,6 +654,14 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
                   />
                 </button>
               </div>
+
+              {/* Error display box */}
+              {manualAddressError && (
+                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium text-left animate-fade-in flex gap-2 items-start">
+                  <span className="text-sm select-none">⚠️</span>
+                  <span>{manualAddressError}</span>
+                </div>
+              )}
 
               {/* Action trigger button */}
               <button
