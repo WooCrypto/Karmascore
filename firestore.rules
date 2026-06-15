@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net (Strict Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE SECURITY PRIMITIVES ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- POLICY GATE: SOVEREIGN PROFILES ---
+    // Anyone can read a public Web3 credit passport.
+    // Writes are only allowed if they adhere precisely to our schema invariants.
+    match /profiles/{address} {
+      allow get: if true;
+      allow list: if true; // Allowed to read list index metrics for global credit leaderboard
+      
+      allow create: if (
+        incoming().address is string && 
+        incoming().address.size() >= 4 &&
+        incoming().address.size() <= 128 &&
+        incoming().username is string && 
+        incoming().username.size() >= 3 && 
+        incoming().username.size() <= 20 &&
+        incoming().karmaScore is int &&
+        incoming().karmaScore >= 0 &&
+        incoming().karmaScore <= 1000
+      );
+
+      allow update: if (
+        incoming().address == existing().address &&
+        incoming().username is string &&
+        incoming().username.size() >= 3 &&
+        incoming().username.size() <= 20 &&
+        incoming().karmaScore is int &&
+        incoming().karmaScore >= 0 &&
+        incoming().karmaScore <= 1000
+      );
+
+      allow delete: if false; // Reputation coordinates are immortal and cannot be deleted
+    }
+
+    // --- POLICY GATE: AUTH CHALLENGES ---
+    match /challenges/{address} {
+      allow get: if true;
+      allow create, update: if (
+        incoming().address is string &&
+        incoming().address.size() >= 4 &&
+        incoming().address.size() <= 128 &&
+        incoming().challenge is string &&
+        incoming().challenge.size() <= 128
+      );
+      allow delete: if true; // Server/client can clear stale challenges after use
+    }
+  }
+}

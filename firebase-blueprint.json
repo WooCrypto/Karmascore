@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Represents a sovereign user reputation passport profile and dynamic hold history indicators.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "The unique 42-character EVM hex address identifier."
+        },
+        "username": {
+          "type": "string",
+          "description": "The alphanumeric handle chosen by the sovereign user."
+        },
+        "hideWallet": {
+          "type": "boolean",
+          "description": "Indicates if the wallet address should be obscured on the leaderboard."
+        },
+        "streak": {
+          "type": "integer",
+          "description": "Day countdown of continuous holding behavior."
+        },
+        "connectedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The ISO timestamp when the passport was compiled."
+        },
+        "karmaScore": {
+          "type": "integer",
+          "description": "Web3 aggregate reputation and reliability score (0-1000 range)."
+        },
+        "personality": {
+          "type": "string",
+          "description": "Reputation personality archetype."
+        },
+        "auraPoints": {
+          "type": "integer",
+          "description": "Reward aura balance details."
+        },
+        "lastClaimedAt": {
+          "type": "string",
+          "description": "ISO timestamp for when the last daily airdrop was claimed."
+        }
+      },
+      "required": ["address", "username", "karmaScore"]
+    },
+    "AuthChallenge": {
+      "title": "AuthChallenge",
+      "description": "Transient cryptographic challenge message details mapped to the user address.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Target signing address."
+        },
+        "challenge": {
+          "type": "string",
+          "description": "Unique cryptographic handshake UUID value."
+        },
+        "createdAt": {
+          "type": "integer",
+          "description": "EVM signature session generation coordinate timestamp."
+        }
+      },
+      "required": ["address", "challenge", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/profiles/{address}": {
+      "schema": "UserProfile",
+      "description": "Individual reputation coordinates mapped by public key address."
+    },
+    "/challenges/{address}": {
+      "schema": "AuthChallenge",
+      "description": "Transient validation message structures for cryptographic verify flows."
+    }
+  }
+}
