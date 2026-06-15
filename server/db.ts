@@ -139,25 +139,49 @@ export function clearCache(address: string): void {
 }
 
 // --- Challenges Store (Web Interface Auth Handshaking) ---
+const challengesInMemory = new Map<string, ChallengeRecord>();
+
+export interface ChallengeRecord {
+  address: string;
+  challenge: string;
+  createdAt: number;
+}
+
 export async function createChallenge(address: string): Promise<string> {
   const normalized = address.toLowerCase();
   const challenge = crypto.randomUUID();
+  const record: ChallengeRecord = {
+    address: normalized,
+    challenge,
+    createdAt: Date.now()
+  };
+  
+  // Store immediately in cache map to guarantee instant low-latency retrieval
+  challengesInMemory.set(normalized, record);
+
   const pathStr = `challenges/${normalized}`;
   try {
-    await withTimeout(setDoc(doc(db, 'challenges', normalized), {
-      address: normalized,
-      challenge,
-      createdAt: Date.now()
-    }), 2500);
+    await withTimeout(setDoc(doc(db, 'challenges', normalized), record), 2500);
     return challenge;
   } catch (err) {
-    console.warn(`[DB WARNING] createChallenge failed or timed out: ${err instanceof Error ? err.message : String(err)}. Returning local challenge.`);
+    console.warn(`[DB WARNING] createChallenge failed or timed out: ${err instanceof Error ? err.message : String(err)}. Relying on in-memory cache.`);
     return challenge;
   }
 }
 
 export async function getChallenge(address: string): Promise<string | null> {
   const normalized = address.toLowerCase();
+  
+  // Check local cache first
+  const cacheHit = challengesInMemory.get(normalized);
+  if (cacheHit) {
+    if (Date.now() - cacheHit.createdAt > 5 * 60 * 1000) {
+      challengesInMemory.delete(normalized);
+      return null;
+    }
+    return cacheHit.challenge;
+  }
+
   const pathStr = `challenges/${normalized}`;
   try {
     const docRef = doc(db, 'challenges', normalized);
@@ -177,14 +201,19 @@ export async function getChallenge(address: string): Promise<string | null> {
   }
 }
 
-export interface ChallengeRecord {
-  address: string;
-  challenge: string;
-  createdAt: number;
-}
-
 export async function getChallengeRecord(address: string): Promise<ChallengeRecord | null> {
   const normalized = address.toLowerCase();
+  
+  // Check local cache first
+  const cacheHit = challengesInMemory.get(normalized);
+  if (cacheHit) {
+    if (Date.now() - cacheHit.createdAt > 5 * 60 * 1000) {
+      challengesInMemory.delete(normalized);
+      return null;
+    }
+    return cacheHit;
+  }
+
   const pathStr = `challenges/${normalized}`;
   try {
     const docRef = doc(db, 'challenges', normalized);
@@ -197,11 +226,14 @@ export async function getChallengeRecord(address: string): Promise<ChallengeReco
       } catch (_) {}
       return null;
     }
-    return {
+    const retrieved = {
       address: data.address,
       challenge: data.challenge,
       createdAt: data.createdAt
     };
+    // Re-缓存 in memory for follow-up verification actions
+    challengesInMemory.set(normalized, retrieved);
+    return retrieved;
   } catch (err) {
     console.warn(`[DB WARNING] getChallengeRecord failed or timed out: ${err instanceof Error ? err.message : String(err)}.`);
     return null;
@@ -210,6 +242,7 @@ export async function getChallengeRecord(address: string): Promise<ChallengeReco
 
 export async function clearChallenge(address: string): Promise<void> {
   const normalized = address.toLowerCase();
+  challengesInMemory.delete(normalized);
   const pathStr = `challenges/${normalized}`;
   try {
     await withTimeout(deleteDoc(doc(db, 'challenges', normalized)), 2500);

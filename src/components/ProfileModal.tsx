@@ -111,7 +111,7 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
           generatedAddr += hexChars[Math.floor(Math.random() * 16)];
         }
         setManualAddress(generatedAddr);
-        setConnectMethod('auto'); // Treat as verified on-chain signature
+        setConnectMethod('sandbox'); // Route to sandbox identity stream
         setPairingStatus('idle');
         setStep('setup');
       }
@@ -178,13 +178,19 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
         return;
       }
     } else {
-      // Sandbox Mode: Fallback to high-fidelity simulated production address
-      const hexChars = '0123456789abcdef';
-      let hexPart = '';
-      for (let i = 0; i < 40; i++) {
-        hexPart += hexChars[Math.floor(Math.random() * 16)];
+      // Sandbox Mode: Maintain previously generated handshake address, or fallback to new high-fidelity mock public keys
+      const cleanAddr = manualAddress.trim();
+      const isEthHex = /^0x[a-fA-F0-9]{40}$/.test(cleanAddr);
+      if (isEthHex) {
+        resolvedAddress = cleanAddr;
+      } else {
+        const hexChars = '0123456789abcdef';
+        let hexPart = '';
+        for (let i = 0; i < 40; i++) {
+          hexPart += hexChars[Math.floor(Math.random() * 16)];
+        }
+        resolvedAddress = '0x' + hexPart; // produces a real formatted 42-character hex string
       }
-      resolvedAddress = '0x' + hexPart; // produces a real formatted 42-character hex string
     }
 
     let signature = 'sandbox_sig';
