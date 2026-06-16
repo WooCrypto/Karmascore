@@ -588,21 +588,27 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
               </div>
 
               <div className="space-y-3.5">
-                <div className="grid grid-cols-2 gap-3.5">
-                  {WALLETS.map(w => (
-                    <button
-                      key={w.id}
-                      onClick={() => handlePickWallet(w)}
-                      className="p-3.5 rounded-2xl flex items-center gap-3 bg-white/[0.02] border border-white/[0.05] hover:bg-[#3b99fc]/5 hover:border-purple-500/40 hover:shadow-[0_0_15px_rgba(168,85,247,0.1)] transition-all text-left cursor-pointer group"
-                    >
-                      <span className="text-2xl filter saturate-[0.85] group-hover:scale-110 group-hover:rotate-6 transition-all">{w.icon}</span>
-                      <div className="min-w-0">
-                        <div className="font-mono text-xs font-bold text-slate-100 truncate">{w.name}</div>
-                        <div className="text-[9px] text-slate-400 capitalize mt-0.5 truncate">{w.desc}</div>
+                {WALLETS.map(w => (
+                  <button
+                    key={w.id}
+                    onClick={() => handlePickWallet(w)}
+                    className="w-full p-4 md:p-5 rounded-2xl flex items-center justify-between bg-white/[0.02] border border-white/[0.06] hover:bg-[#3b99fc]/5 hover:border-[#3b99fc]/40 hover:shadow-[0_0_15px_rgba(59,153,252,0.1)] transition-all text-left cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-[#3b99fc]/20 to-indigo-500/10 flex items-center justify-center text-3xl filter saturate-[1.1] group-hover:scale-105 group-hover:rotate-3 transition-transform">
+                        {w.icon}
                       </div>
-                    </button>
-                  ))}
-                </div>
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs font-bold text-slate-100 uppercase tracking-wider">{w.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-1 max-w-xs leading-normal">Link safe decentralized apps over mobile/desktop Web3 protocols</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                      <span className="text-[9.5px] font-mono text-[#3b99fc] group-hover:text-purple-300 transition-colors uppercase font-bold tracking-wider hidden sm:inline">Connect Mobile</span>
+                      <span className="text-slate-500 group-hover:translate-x-1 transition-transform group-hover:text-slate-300">→</span>
+                    </div>
+                  </button>
+                ))}
               </div>
 
               <div className="relative flex py-2 items-center">
@@ -728,30 +734,6 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
                     >
                       🎲 Run Sandbox Demo (No Wallet)
                     </button>
-                  </div>
-                  
-                  {/* Desktop / Popular browser clients listing */}
-                  <div className="space-y-2">
-                    <span className="text-[9.5px] font-mono text-slate-500 uppercase tracking-widest block font-bold">
-                      Desktop Direct Wallet Integration
-                    </span>
-                    <div className="grid grid-cols-2 gap-2">
-                       {[
-                        { id: 'metamask', name: 'MetaMask Link', icon: '🦊' },
-                        { id: 'trust', name: 'Trust Link', icon: '🛡️' },
-                        { id: 'rainbow', name: 'Rainbow Link', icon: '🌈' },
-                        { id: 'rabby', name: 'Rabby Link', icon: '🐰' },
-                      ].map(desktopWallet => (
-                        <button
-                          key={desktopWallet.id}
-                          onClick={connectRealWalletConnect}
-                          className="p-3 bg-white/[0.02] border border-white/[0.05] hover:bg-[#3b99fc]/10 hover:border-[#3b99fc]/40 rounded-xl flex items-center gap-2.5 text-left cursor-pointer transition-all duration-200"
-                        >
-                          <span className="text-xl">{desktopWallet.icon}</span>
-                          <span className="text-[10px] font-bold text-slate-200 uppercase font-mono">{desktopWallet.name}</span>
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 </div>
               )}
