@@ -25,13 +25,24 @@ dotenv.config();
 
 // Create Express container
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // Ensure passports_saved directory exists on bootstrap
 const PASSPORTS_DIR = path.join(process.cwd(), 'passports_saved');
 if (!fs.existsSync(PASSPORTS_DIR)) {
   fs.mkdirSync(PASSPORTS_DIR, { recursive: true });
 }
+
+// CORS — allow all origins for live production domain compatibility
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
 
 // Access body variables with increased payload limits so base64 canvas exports upload successfully
 app.use(express.json({ limit: '10mb' }));

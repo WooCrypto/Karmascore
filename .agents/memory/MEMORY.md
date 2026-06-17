@@ -1,0 +1,2 @@
+- [Wallet auth flow](wallet-auth-flow.md) — always-sign on each manual connect; page-refresh auto-resume is intentional and separate
+- [Production config](production-config.md) — PORT env var, CORS middleware placement, firebase-applet-config.json path
