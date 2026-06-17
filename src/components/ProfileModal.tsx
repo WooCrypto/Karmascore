@@ -1,1197 +1,741 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User, Wallet } from '../types';
-import { WALLETS } from '../constants';
 import GlassCard from './GlassCard';
-import { ShieldCheck, Cpu, Database, Activity, Landmark } from 'lucide-react';
+import { ShieldCheck, Cpu, Database, Activity, Landmark, Wallet as WalletIcon, PenLine, Sparkles, X, ChevronRight, AlertTriangle } from 'lucide-react';
 
-class InMemoryKeyValueStorage {
-  private store: Record<string, string> = {};
-
-  async getKeys(): Promise<string[]> {
-    return Object.keys(this.store);
-  }
-
-  async getEntries(): Promise<[string, any][]> {
-    return Object.entries(this.store).map(([k, v]) => [k, this.parseValue(v)]);
-  }
-
-  async getItem<T = any>(key: string): Promise<T | undefined> {
-    const value = this.store[key];
-    if (value === undefined) return undefined;
-    return this.parseValue(value) as T;
-  }
-
-  async setItem<T = any>(key: string, value: T): Promise<void> {
-    this.store[key] = typeof value === 'string' ? value : JSON.stringify(value);
-  }
-
-  async removeItem(key: string): Promise<void> {
-    delete this.store[key];
-  }
-
-  async clear(): Promise<void> {
-    this.store = {};
-  }
-
-  private parseValue(value: string): any {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  }
-}
-
+// ─────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────
 interface ConnectModalProps {
   onConnect: (data: { wallet: Wallet; username: string; hideWallet: boolean; address: string; profile?: User }) => void;
   onClose: () => void;
 }
 
+type Step = 'pick' | 'requesting' | 'signing' | 'setup' | 'scanning' | 'welcome_back';
+type Method = 'browser' | 'address' | 'demo';
+
+const INJECTED_WALLETS = [
+  { id: 'metamask', name: 'MetaMask', icon: '🦊', color: '#f6851b', desc: 'Most popular browser extension' },
+  { id: 'rabby', name: 'Rabby Wallet', icon: '🐰', color: '#8672FF', desc: 'Security-focused EVM wallet' },
+  { id: 'coinbasewallet', name: 'Coinbase Wallet', icon: '🔵', color: '#0052ff', desc: 'Coinbase browser extension' },
+  { id: 'phantom', name: 'Phantom (EVM)', icon: '👻', color: '#ab9ff2', desc: 'Solana & Ethereum EVM' },
+  { id: 'rainbow', name: 'Rainbow', icon: '🌈', color: '#ff4d82', desc: 'Beautiful mobile wallet' },
+];
+
+const SCAN_STAGES = [
+  { title: 'Connecting to RPC Gateways', desc: 'Handshaking with Ethereum, Base, and Polygon nodes...', icon: <Cpu className="w-5 h-5 text-indigo-400" /> },
+  { title: 'Fetching Transaction History', desc: 'Scanning block history for your wallet activity...', icon: <Database className="w-5 h-5 text-purple-400" /> },
+  { title: 'Analyzing Hold Patterns', desc: 'Measuring conviction streaks and liquidity behavior...', icon: <Activity className="w-5 h-5 text-pink-400" /> },
+  { title: 'Calibrating Behavior Score', desc: 'Mapping governance participation and protocol reputation...', icon: <Landmark className="w-5 h-5 text-emerald-400" /> },
+  { title: 'Compiling Karma Score', desc: 'Building your cryptographic credit reputation passport...', icon: <ShieldCheck className="w-5 h-5 text-amber-500 animate-bounce" /> },
+];
+
+// ─────────────────────────────────────────────
+// WalletModal
+// ─────────────────────────────────────────────
 export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
-  const [step, setStep] = useState<'pick' | 'setup' | 'connecting' | 'welcome_back' | 'walletconnect_pair' | 'rainbowkit_connect'>('pick');
-  const [selectedWallet, setSelectedWallet] = useState<Wallet | null>(null);
+  const [step, setStep] = useState<Step>('pick');
+  const [method, setMethod] = useState<Method>('browser');
+
+  // Wallet connection state
+  const [detectedWallet, setDetectedWallet] = useState<typeof INJECTED_WALLETS[0] | null>(null);
+  const [address, setAddress] = useState('');
+  const [signature, setSignature] = useState('sandbox_sig');
+  const [connectionError, setConnectionError] = useState('');
+
+  // Setup form state
   const [username, setUsername] = useState('');
   const [hideWallet, setHideWallet] = useState(false);
   const [usernameError, setUsernameError] = useState('');
-  const [savedProfile, setSavedProfile] = useState<any | null>(null);
-  const [wcProvider, setWcProvider] = useState<any | null>(null);
-
-  // Connection options state: auto web3, manual paste, sandbox template
-  const [connectMethod, setConnectMethod] = useState<'auto' | 'manual' | 'sandbox'>('auto');
   const [manualAddress, setManualAddress] = useState('');
   const [manualAddressError, setManualAddressError] = useState('');
 
-  // WalletConnect pairing state simulation
-  const [pairingStatus, setPairingStatus] = useState<'idle' | 'linking'>('idle');
-  const [pairingProgress, setPairingProgress] = useState(0);
-  const [wcError, setWcError] = useState('');
-  const [wcConnecting, setWcConnecting] = useState(false);
-
-  // Modern Wagmi / RainbowKit configuration states
-  const [rainbowProgress, setRainbowProgress] = useState(0);
-  const [rainbowPhase, setRainbowPhase] = useState<'init' | 'wagmi' | 'viem' | 'postgres' | 'gemini' | 'success'>('init');
-  const [generatedAddress, setGeneratedAddress] = useState('');
-
-  // Custom recovery loaders
-  const [isCompiling, setIsCompiling] = useState(false);
-  const [iframeWarning, setIframeWarning] = useState(false);
-
-  // Scanning simulation state variables
+  // Scan animation state
   const [scanProgress, setScanProgress] = useState(0);
   const [scanStage, setScanStage] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const scanStages = [
-    { title: "Resolving On-Chain RPCs", desc: "Handshaking with decentralized Ethereum gateway nodes...", icon: <Cpu className="w-5 h-5 text-indigo-400" /> },
-    { title: "Retrieving Transaction History", desc: "Indexed 147 historic block epochs for this public keyset...", icon: <Database className="w-5 h-5 text-purple-400" /> },
-    { title: "Evaluating Asset Hold-Times", desc: "Averaging streak fidelity and multi-chain liquidity holding intervals...", icon: <Activity className="w-5 h-5 text-pink-400" /> },
-    { title: "Calibrating Behavior Persona", desc: "Analyzing gas optimization strategies and smart contract voting history...", icon: <Landmark className="w-5 h-5 text-emerald-400" /> },
-    { title: "Compiling Final Karma Rank", desc: "Success! Building cryptographic credit reputation ledger...", icon: <ShieldCheck className="w-5 h-5 text-amber-500 animate-bounce" /> },
-  ];
+  // Welcome back
+  const [savedProfile, setSavedProfile] = useState<any>(null);
+  const [savedWallet, setSavedWallet] = useState<Wallet | null>(null);
 
+  const hasEthereum = typeof window !== 'undefined' && !!(window as any).ethereum && !(window as any).ethereum.__isFallback;
+
+  // Detect which injected wallet is present
   useEffect(() => {
-    let timer: any;
-    if (step === 'rainbowkit_connect') {
-      setRainbowProgress(0);
-      setRainbowPhase('wagmi');
-      
-      timer = setTimeout(() => {
-        setRainbowPhase('viem');
-        setRainbowProgress(25);
-        
-        timer = setTimeout(() => {
-          setRainbowPhase('postgres');
-          setRainbowProgress(50);
-          
-          timer = setTimeout(() => {
-            setRainbowPhase('gemini');
-            setRainbowProgress(75);
-            
-            timer = setTimeout(() => {
-              setRainbowPhase('success');
-              setRainbowProgress(100);
-              
-              timer = setTimeout(() => {
-                if (selectedWallet?.id === 'sandbox') {
-                  setConnectMethod('sandbox');
-                } else {
-                  setConnectMethod('auto');
-                }
-                setStep('setup');
-              }, 1000);
-            }, 800);
-          }, 800);
-        }, 800);
-      }, 800);
-    }
-    return () => clearTimeout(timer);
-  }, [step, selectedWallet]);
+    if (!hasEthereum) return;
+    const eth = (window as any).ethereum;
+    if (eth.isRabby) setDetectedWallet(INJECTED_WALLETS[1]);
+    else if (eth.isCoinbaseWallet) setDetectedWallet(INJECTED_WALLETS[2]);
+    else if (eth.isPhantom) setDetectedWallet(INJECTED_WALLETS[3]);
+    else setDetectedWallet(INJECTED_WALLETS[0]); // default MetaMask
+  }, [hasEthereum]);
 
+  // Scan animation loop (runs during 'scanning' step)
   useEffect(() => {
-    let interval: any;
-    let stageInterval: any;
-    if (step === 'connecting') {
-      setScanProgress(0);
-      setScanStage(0);
-      
-      interval = setInterval(() => {
-        setScanProgress(p => {
-          if (p >= 100) {
-            clearInterval(interval);
-            return 100;
-          }
-          return p + 2;
-        });
-      }, 76);
+    if (step !== 'scanning') return;
+    setScanProgress(0);
+    setScanStage(0);
 
-      stageInterval = setInterval(() => {
-        setScanStage(s => {
-          if (s >= scanStages.length - 1) {
-            clearInterval(stageInterval);
-            return scanStages.length - 1;
-          }
-          return s + 1;
-        });
-      }, 820);
-    }
+    const progressInterval = setInterval(() => {
+      setScanProgress(p => (p >= 100 ? 100 : p + 2));
+    }, 76);
+
+    const stageInterval = setInterval(() => {
+      setScanStage(s => (s >= SCAN_STAGES.length - 1 ? SCAN_STAGES.length - 1 : s + 1));
+    }, 820);
+
     return () => {
-      clearInterval(interval);
+      clearInterval(progressInterval);
       clearInterval(stageInterval);
     };
   }, [step]);
 
-  function startRainbowKitFlow(wallet: Wallet) {
-    setSelectedWallet(wallet);
-    setIframeWarning(false);
-    setWcError('');
+  // ── Browser wallet connection ──
+  async function connectBrowserWallet(walletHint?: typeof INJECTED_WALLETS[0]) {
+    const wallet = walletHint || detectedWallet || INJECTED_WALLETS[0];
+    setConnectionError('');
+    setStep('requesting');
 
-    // Generate a beautiful, authentic EVM hex address for scoring representation
-    const hexChars = '0123456789abcdef';
-    let randPart = '';
-    for (let i = 0; i < 40; i++) {
-      randPart += hexChars[Math.floor(Math.random() * 16)];
+    const eth = (window as any).ethereum;
+    if (!eth || eth.__isFallback) {
+      setConnectionError('No Web3 wallet detected. Please install MetaMask or another browser extension, then try again.');
+      setStep('pick');
+      return;
     }
-    const derivedAddr = '0x' + randPart;
-    setGeneratedAddress(derivedAddr);
-    setManualAddress(derivedAddr);
 
-    setStep('rainbowkit_connect');
-    setRainbowPhase('init');
-    setRainbowProgress(0);
-  }
+    let accounts: string[];
+    try {
+      accounts = await eth.request({ method: 'eth_requestAccounts' });
+    } catch (err: any) {
+      const msg = err?.code === 4001
+        ? 'You rejected the connection request. Please approve it in your wallet to continue.'
+        : err?.message?.includes('already pending')
+          ? 'A connection request is already pending. Check your wallet extension.'
+          : `Wallet connection failed: ${err?.message || 'Unknown error'}`;
+      setConnectionError(msg);
+      setStep('pick');
+      return;
+    }
 
-  function handlePickWallet(wallet: Wallet) {
-    setSelectedWallet(wallet);
-    setWcError('');
-    setIframeWarning(false);
+    if (!accounts || !accounts[0]) {
+      setConnectionError('No accounts returned from wallet. Please unlock your wallet and try again.');
+      setStep('pick');
+      return;
+    }
 
+    const resolvedAddress = accounts[0].toLowerCase();
+    setAddress(resolvedAddress);
+
+    // Get challenge and request signature
+    setStep('signing');
+    let sig = 'sandbox_sig';
+    try {
+      const challengeRes = await fetch('/api/auth/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: resolvedAddress }),
+      });
+      const challengeData = await challengeRes.json();
+
+      if (challengeData?.message && !challengeData.error) {
+        const hexMessage = '0x' + Array.from(new TextEncoder().encode(challengeData.message))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        sig = await eth.request({
+          method: 'personal_sign',
+          params: [hexMessage, resolvedAddress],
+        });
+      }
+    } catch (signErr: any) {
+      if (signErr?.code === 4001) {
+        setConnectionError('You rejected the signature request. Signature is needed to verify wallet ownership.');
+        setStep('pick');
+        return;
+      }
+      // Non-rejection errors: continue with sandbox_sig fallback
+      console.warn('[KARMA] Signing failed, using fallback:', signErr);
+    }
+
+    setSignature(sig);
+
+    // Check for returning user
     try {
       const registryRaw = localStorage.getItem('karma_profiles_registry');
       if (registryRaw) {
         const registry = JSON.parse(registryRaw);
-        if (registry[wallet.id]) {
-          setSavedProfile(registry[wallet.id]);
+        const saved = registry[resolvedAddress];
+        if (saved) {
+          setSavedProfile(saved);
+          setSavedWallet(wallet);
           setStep('welcome_back');
           return;
         }
       }
-    } catch (e) {
-      console.warn('Reading registry failed:', e);
-    }
+    } catch { /* ignore */ }
 
-    startRainbowKitFlow(wallet);
+    setStep('setup');
   }
 
-  async function handleConfirm() {
-    const trimmed = username.trim();
-    if (!trimmed) {
-      setUsernameError('Please enter a username.');
-      return;
-    }
-    if (trimmed.length < 3) {
-      setUsernameError('Username must be at least 3 characters.');
-      return;
-    }
-    if (trimmed.length > 20) {
-      setUsernameError('Username must be 20 characters or less.');
-      return;
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(trimmed)) {
-      setUsernameError('Username can compile characters, numbers and underscores only.');
-      return;
-    }
+  // ── Launch scan + backend verify ──
+  async function launchScan(resolvedAddress: string, resolvedSignature: string, resolvedUsername: string, wallet: Wallet) {
+    setStep('scanning');
 
-    setUsernameError('');
-    setManualAddressError('');
-    setIsCompiling(true);
-    setIframeWarning(false);
-    let resolvedAddress = '';
-
-    if (connectMethod === 'manual') {
-      const cleanAddr = manualAddress.trim();
-      if (!cleanAddr) {
-        setManualAddressError('Please enter an address or .eth name.');
-        setIsCompiling(false);
-        return;
-      }
-      
-      const isEthHex = /^0x[a-fA-F0-9]{40}$/.test(cleanAddr);
-      const isEns = cleanAddr.toLowerCase().endsWith('.eth') && cleanAddr.length > 4;
-
-      if (!isEthHex && !isEns) {
-        setManualAddressError('Please enter a valid 42-character Ethereum hex address starting with "0x", or a ".eth" extension.');
-        setIsCompiling(false);
-        return;
-      }
-      resolvedAddress = cleanAddr;
-    } else if (connectMethod === 'auto') {
-      // Use active WalletConnect provider account if populated, else fallback to window.ethereum
-      if (wcProvider && wcProvider.accounts && wcProvider.accounts[0]) {
-        resolvedAddress = wcProvider.accounts[0];
-      } else if (typeof window !== 'undefined' && (window as any).ethereum) {
-        try {
-          const provider = (window as any).ethereum;
-          if (provider.__isFallback) {
-            throw new Error('No real active Web3 browser extension detected in this iframe sandbox. Please choose custom key or sandbox!');
-          }
-          
-          // Race account fetch against a 3.5-second timeout to handle iframe sandbox locks
-          const accountsPromise = provider.request({ method: 'eth_requestAccounts' });
-          const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error('TIMEOUT_ERROR')), 3500)
-          );
-          
-          const accounts = await Promise.race([accountsPromise, timeoutPromise]);
-          
-          if (accounts && accounts[0]) {
-            resolvedAddress = accounts[0];
-          }
-        } catch (err: any) {
-          console.warn('Real wallet login attempted but timed out or rejected in sandbox frame:', err);
-          
-          if (err?.message === 'TIMEOUT_ERROR' || err?.message?.includes('TIMEOUT')) {
-            setIframeWarning(true);
-            setManualAddressError('Web3 browser handshake timed out. Because you are testing inside an iframe parent sandbox container, browser security limits direct extension queries. Continuing with instant failsafe sandbox address alignment!');
-          } else {
-            setManualAddressError(err.message || 'Direct connection was closed or rejected by the browser client.');
-          }
-          
-          // Failsafe sandbox address generator so they never get stuck on clicking
-          const hexChars = '0123456789abcdef';
-          let hexPart = '';
-          for (let i = 0; i < 40; i++) {
-            hexPart += hexChars[Math.floor(Math.random() * 16)];
-          }
-          resolvedAddress = '0x' + hexPart;
-        }
-      }
-      
-      if (!resolvedAddress) {
-        // Fallback to random address if provider can't resolve or wasn't found
-        const hexChars = '0123456789abcdef';
-        let hexPart = '';
-        for (let i = 0; i < 40; i++) {
-          hexPart += hexChars[Math.floor(Math.random() * 16)];
-        }
-        resolvedAddress = '0x' + hexPart;
-      }
-    } else {
-      // Sandbox Mode: Maintain previously generated address or use deterministic failsafe
-      const cleanAddr = manualAddress.trim();
-      const isEthHex = /^0x[a-fA-F0-9]{40}$/.test(cleanAddr);
-      if (isEthHex) {
-        resolvedAddress = cleanAddr;
-      } else {
-        const hexChars = '0123456789abcdef';
-        let hexPart = '';
-        for (let i = 0; i < 40; i++) {
-          hexPart += hexChars[Math.floor(Math.random() * 16)];
-        }
-        resolvedAddress = '0x' + hexPart;
-      }
-    }
-
-    let signature = 'sandbox_sig';
-    const activeProvider = wcProvider || (typeof window !== 'undefined' && (window as any).ethereum ? (window as any).ethereum : null);
-    if (connectMethod === 'auto' && activeProvider && resolvedAddress && !iframeWarning) {
-      try {
-        // Request challenge
-        const challengeRes = await fetch('/api/auth/challenge', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: resolvedAddress })
-        });
-        const challengeData = await challengeRes.json();
-        
-        if (challengeData && !challengeData.error && challengeData.message) {
-          // Request signature
-          try {
-            const rawMessage = challengeData.message;
-            let hexMessage = '0x';
-            try {
-              hexMessage = '0x' + Array.from(new TextEncoder().encode(rawMessage))
-                .map(b => b.toString(16).padStart(2, '0'))
-                .join('');
-            } catch (e) {
-              let hex = '';
-              for (let i = 0; i < rawMessage.length; i++) {
-                hex += rawMessage.charCodeAt(i).toString(16).padStart(2, '0');
-              }
-              hexMessage = '0x' + hex;
-            }
-            
-            // Signature signature request with a 15-second timeout boundary
-            const signPromise = activeProvider.request({
-              method: 'personal_sign',
-              params: [hexMessage, resolvedAddress]
-            });
-            const signTimeout = new Promise<never>((_, reject) => 
-              setTimeout(() => reject(new Error('TIMEOUT_ERROR')), 15000)
-            );
-            
-            signature = await Promise.race([signPromise, signTimeout]);
-          } catch (signErr: any) {
-            console.warn('EVM wallet signature rejected/failed or timed out. Bypassing with verified sandbox session to guarantee progress:', signErr);
-            signature = 'sandbox_sig';
-            if (signErr?.message === 'TIMEOUT_ERROR') {
-              setIframeWarning(true);
-            }
-          }
-        } else {
-          signature = 'sandbox_sig';
-        }
-      } catch (err: any) {
-        console.warn('EVM signing challenge fetch failed, continuing in fast compatibility mode:', err);
-        signature = 'sandbox_sig';
-      }
-    }
-
-    setIsCompiling(false);
-    setStep('connecting');
-
+    let profile: any = null;
     try {
-      // Call verify endpoint to compile reputation index on-chain
-      let profile: any = null;
-      try {
-        const verifyRes = await fetch('/api/auth/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            address: resolvedAddress,
-            signature,
-            username: trimmed,
-            hideWallet,
-            wallet: selectedWallet
-          })
-        });
-        if (verifyRes.ok) {
-          const parsed = await verifyRes.json();
-          if (parsed && !parsed.error) {
-            profile = parsed;
-          }
-        }
-      } catch (fetchErr) {
-        console.warn('Backend verification call failed, engaging high-fidelity fallback:', fetchErr);
-      }
-
-      // If backend was unreachable or returned an error, run standalone local client recovery
-      if (!profile) {
-        console.log('Using local sandbox profile compiler fallback...');
-        const cleanAddr = resolvedAddress.toLowerCase();
-        let hash = 0;
-        for (let i = 0; i < cleanAddr.length; i++) {
-          hash = (hash << 5) - hash + cleanAddr.charCodeAt(i);
-          hash |= 0;
-        }
-        hash = Math.abs(hash);
-
-        const karmaScore = Math.max(120, Math.min(1000, 380 + (hash % 580)));
-        const personalities = ['Diamond', 'Visionary', 'Builder', 'Sage', 'Guardian', 'Explorer', 'Phoenix', 'Pioneer'];
-        const personality = personalities[hash % personalities.length];
-        const auraPoints = 50 + (hash % 500);
-
-        profile = {
-          address: resolvedAddress.toLowerCase(),
-          username: trimmed,
+      const res = await fetch('/api/auth/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: resolvedAddress,
+          signature: resolvedSignature,
+          username: resolvedUsername,
           hideWallet,
-          wallet: {
-            id: selectedWallet?.id || 'metamask',
-            name: selectedWallet?.name || 'MetaMask',
-            icon: selectedWallet?.icon || '🦊',
-            color: selectedWallet?.color || '#f6851b',
-            desc: selectedWallet?.desc || 'Browser Wallet',
-          },
-          streak: 3 + (hash % 64),
-          connectedAt: new Date().toISOString(),
-          karmaScore,
-          personality,
-          auraPoints,
-          lastClaimedAt: '',
-          activities: [],
-          categories: [
-            { label: 'Patience', value: 85, color: '#a78bfa', icon: '◈' },
-            { label: 'Loyalty', value: 78, color: '#60a5fa', icon: '◆' },
-            { label: 'Wisdom', value: 92, color: '#fbbf24', icon: '⊕' },
-            { label: 'Generosity', value: 50, color: '#34d399', icon: '⬡' },
-            { label: 'Energy', value: 65, color: '#f472b6', icon: '◉' },
-          ],
-          scores: {
-            walletAge: 80,
-            holdingBehavior: 75,
-            txQuality: 90,
-            staking: 45,
-            governance: 60,
-            community: 50,
-            protocolRep: 95,
-          },
-          metrics: {
-            firstTxDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-            walletAgeDays: 365,
-            totalTransactions: 120,
-            activeDays: 45,
-            tokenBalancesUSD: 2400,
-            nftCount: 3,
-            stakedAmountUSD: 1000,
-            stakedDurationDays: 90,
-            daoVotes: 4,
-            earlyMintsCount: 1,
-            riskInteractionsCount: 0,
-          },
-          history: [
-            { time: 'Jun 10', reputation: karmaScore - 4, activityVolume: 4, gasSaved: 0.015 },
-            { time: 'Jun 12', reputation: karmaScore - 2, activityVolume: 5, gasSaved: 0.018 },
-            { time: 'Jun 15', reputation: karmaScore,     activityVolume: 6, gasSaved: 0.022 }
-          ]
-        };
+          wallet,
+        }),
+      });
+      if (res.ok) {
+        const parsed = await res.json();
+        if (parsed && !parsed.error) profile = parsed;
       }
-      
-      // Complete callback with real or persistent fallback profile data!
-      setTimeout(() => {
-        if (selectedWallet) {
-          try {
-            const registryRaw = localStorage.getItem('karma_profiles_registry');
-            const registry = registryRaw ? JSON.parse(registryRaw) : {};
-            registry[selectedWallet.id] = {
-              username: trimmed,
-              hideWallet,
-              address: resolvedAddress,
-              karmaScore: profile.karmaScore,
-              personality: profile.personality,
-              auraPoints: profile.auraPoints
-            };
-            localStorage.setItem('karma_profiles_registry', JSON.stringify(registry));
-          } catch (e) {
-            console.error('Failed to sync karma_profiles_registry', e);
-          }
+    } catch (err) {
+      console.warn('[KARMA] Backend verify failed, using local fallback:', err);
+    }
 
-          onConnect({
-            wallet: selectedWallet,
-            username: trimmed,
-            hideWallet,
-            address: resolvedAddress,
-            profile // pass along backend parsed record
-          } as any);
-        }
-      }, 4200);
-    } catch (err: any) {
-      console.error('Unexpected error in profile modal verification flow:', err);
-      try {
-        const cleanAddr = (resolvedAddress || '0x0000000000000000000000000000000000000000').toLowerCase();
-        let hash = 0;
-        for (let i = 0; i < cleanAddr.length; i++) {
-          hash = (hash << 5) - hash + cleanAddr.charCodeAt(i);
-          hash |= 0;
-        }
-        hash = Math.abs(hash);
-        const karmaScore = Math.max(280, Math.min(1000, 450 + (hash % 500)));
-        onConnect({
-          wallet: selectedWallet || WALLETS[0],
-          username: trimmed || 'KarmaUser',
-          hideWallet,
-          address: cleanAddr,
-          profile: {
-            address: cleanAddr,
-            username: trimmed || 'KarmaUser',
-            hideWallet,
-            wallet: selectedWallet || WALLETS[0],
-            streak: 5,
-            connectedAt: new Date().toISOString(),
-            karmaScore,
-            personality: 'Explorer',
-            auraPoints: 200,
-            lastClaimedAt: '',
-            activities: [],
-            categories: [
-              { label: 'Patience', value: 80, color: '#a78bfa', icon: '◈' },
-              { label: 'Loyalty', value: 70, color: '#60a5fa', icon: '◆' },
-              { label: 'Wisdom', value: 85, color: '#fbbf24', icon: '⊕' },
-              { label: 'Generosity', value: 50, color: '#34d399', icon: '⬡' },
-              { label: 'Energy', value: 60, color: '#f472b6', icon: '◉' },
-            ],
-            scores: { walletAge: 70, holdingBehavior: 80, txQuality: 75, staking: 30, governance: 40, community: 50, protocolRep: 80 },
-            metrics: { firstTxDate: '2025-01-01', walletAgeDays: 180, totalTransactions: 50, activeDays: 20, tokenBalancesUSD: 500, nftCount: 1, stakedAmountUSD: 0, stakedDurationDays: 0, daoVotes: 0, earlyMintsCount: 0, riskInteractionsCount: 0 },
-            history: [{ time: 'Jun 15', reputation: karmaScore, activityVolume: 5, gasSaved: 0.01 }]
-          } as any
-        });
-      } catch (criticalErr) {
-        setStep('setup');
-        setManualAddressError('Failed to synchronize reputation passport with the index server.');
+    // Local fallback if backend unreachable
+    if (!profile) {
+      const clean = resolvedAddress.toLowerCase();
+      let hash = 0;
+      for (let i = 0; i < clean.length; i++) {
+        hash = (hash << 5) - hash + clean.charCodeAt(i);
+        hash |= 0;
+      }
+      hash = Math.abs(hash);
+      const karmaScore = Math.max(120, Math.min(1000, 380 + (hash % 580)));
+      const personalities = ['Diamond', 'Visionary', 'Builder', 'Sage', 'Guardian', 'Explorer', 'Phoenix', 'Pioneer'];
+      profile = {
+        address: clean,
+        username: resolvedUsername,
+        hideWallet,
+        wallet,
+        streak: 3 + (hash % 64),
+        connectedAt: new Date().toISOString(),
+        karmaScore,
+        personality: personalities[hash % personalities.length],
+        auraPoints: 50 + (hash % 500),
+        lastClaimedAt: '',
+        activities: [],
+        categories: [
+          { label: 'Patience', value: Math.min(100, 30 + (hash % 60)), color: '#a78bfa', icon: '◈' },
+          { label: 'Loyalty', value: Math.min(100, 25 + (hash % 65)), color: '#60a5fa', icon: '◆' },
+          { label: 'Wisdom', value: Math.min(100, 35 + (hash % 55)), color: '#fbbf24', icon: '⊕' },
+          { label: 'Generosity', value: Math.min(100, 20 + (hash % 60)), color: '#34d399', icon: '⬡' },
+          { label: 'Energy', value: Math.min(100, 15 + (hash % 70)), color: '#f472b6', icon: '◉' },
+        ],
+        scores: { walletAge: 60, holdingBehavior: 70, txQuality: 75, staking: 40, governance: 45, community: 55, protocolRep: 90 },
+        metrics: { firstTxDate: new Date(Date.now() - 180 * 86400000).toISOString().split('T')[0], walletAgeDays: 180, totalTransactions: 50 + (hash % 200), activeDays: 20, tokenBalancesUSD: 500 + (hash % 5000), nftCount: hash % 8, stakedAmountUSD: 0, stakedDurationDays: 0, daoVotes: hash % 5, earlyMintsCount: 0, riskInteractionsCount: 0 },
+        history: [
+          { time: 'Jun 10', reputation: karmaScore - 10, activityVolume: 3, gasSaved: 0.01 },
+          { time: 'Jun 13', reputation: karmaScore - 4, activityVolume: 5, gasSaved: 0.015 },
+          { time: 'Jun 17', reputation: karmaScore, activityVolume: 6, gasSaved: 0.022 },
+        ],
+      };
+    }
+
+    // Save to registry
+    try {
+      const registryRaw = localStorage.getItem('karma_profiles_registry');
+      const registry = registryRaw ? JSON.parse(registryRaw) : {};
+      registry[resolvedAddress] = {
+        username: resolvedUsername,
+        hideWallet,
+        address: resolvedAddress,
+        karmaScore: profile.karmaScore,
+        personality: profile.personality,
+        auraPoints: profile.auraPoints,
+      };
+      localStorage.setItem('karma_profiles_registry', JSON.stringify(registry));
+    } catch { /* ignore */ }
+
+    // Wait for scan animation to complete (minimum 4.2s feels good)
+    setTimeout(() => {
+      onConnect({ wallet, username: resolvedUsername, hideWallet, address: resolvedAddress, profile });
+    }, 4200);
+  }
+
+  // ── Setup form submit ──
+  function handleSetupConfirm() {
+    const trimmed = username.trim();
+    if (!trimmed) { setUsernameError('Please enter a username.'); return; }
+    if (trimmed.length < 3) { setUsernameError('Username must be at least 3 characters.'); return; }
+    if (trimmed.length > 20) { setUsernameError('Username must be 20 characters or less.'); return; }
+    if (!/^[a-zA-Z0-9_]+$/.test(trimmed)) { setUsernameError('Only letters, numbers, and underscores allowed.'); return; }
+    setUsernameError('');
+
+    let resolvedAddress = address;
+    let wallet: Wallet = { id: 'browser', name: detectedWallet?.name || 'Browser Wallet', icon: detectedWallet?.icon || '🔌', color: detectedWallet?.color || '#a78bfa', desc: 'Browser Extension' };
+
+    if (method === 'address') {
+      const clean = manualAddress.trim();
+      const isHex = /^0x[a-fA-F0-9]{40}$/.test(clean);
+      const isEns = clean.toLowerCase().endsWith('.eth') && clean.length > 4;
+      if (!isHex && !isEns) {
+        setManualAddressError('Enter a valid Ethereum address (0x...) or ENS name (.eth).');
+        return;
+      }
+      resolvedAddress = clean;
+      wallet = { id: 'manual_wallet', name: 'Manual Address', icon: '✍️', color: '#818cf8', desc: 'Read-Only Audit' };
+    } else if (method === 'demo') {
+      const hexChars = '0123456789abcdef';
+      let addr = '0x';
+      for (let i = 0; i < 40; i++) addr += hexChars[Math.floor(Math.random() * 16)];
+      resolvedAddress = addr;
+      wallet = { id: 'sandbox_wallet', name: 'Demo Mode', icon: '🎲', color: '#10b981', desc: 'Sandbox Demo' };
+    } else {
+      // browser method: use detectedWallet info
+      if (detectedWallet) {
+        wallet = { id: detectedWallet.id, name: detectedWallet.name, icon: detectedWallet.icon, color: detectedWallet.color, desc: detectedWallet.desc };
       }
     }
+
+    setManualAddressError('');
+    launchScan(resolvedAddress, signature, trimmed, wallet);
+  }
+
+  // ── Returning user quick-login ──
+  function handleWelcomeBackLogin() {
+    if (!savedProfile || !savedWallet) return;
+    launchScan(savedProfile.address, signature, savedProfile.username, savedWallet);
   }
 
   return (
-    <div className="fixed inset-0 z-[200] overflow-y-auto animate-fade-in" id="wallet-modal-overlay">
-      {/* Dimmed static backdrop */}
-      <div 
-        onClick={step !== 'connecting' ? onClose : undefined} 
-        className="fixed inset-0 bg-slate-950/85 backdrop-blur-md transition-opacity" 
+    <div className="fixed inset-0 z-[200] overflow-y-auto" id="wallet-modal-overlay">
+      <div
+        onClick={step !== 'scanning' ? onClose : undefined}
+        className="fixed inset-0 bg-slate-950/85 backdrop-blur-md"
       />
-
       <div className="flex min-h-screen items-center justify-center p-4 sm:p-6">
-        <div className="relative w-full max-w-[450px] transform transition-all" style={{ animation: 'fadeUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)' }}>
+        <div className="relative w-full max-w-[440px]" style={{ animation: 'fadeUp 0.3s cubic-bezier(0.16,1,0.3,1)' }}>
           <GlassCard style={{ padding: 0, overflow: 'hidden' }}>
-          
-          {/* Top Title deck */}
-          <div className="p-8 pb-5 flex items-start justify-between">
-            <div>
-              <h3 className="font-extrabold text-[#f8fafc] text-xl" style={{ fontFamily: "'Syne', sans-serif" }}>
-                {step === 'pick' 
-                  ? 'Connect Wallet' 
-                  : step === 'welcome_back' 
-                    ? 'Welcome Back' 
-                    : step === 'setup' 
-                      ? 'Complete Profile' 
-                      : step === 'rainbowkit_connect'
-                        ? 'RainbowKit Connector'
-                        : step === 'walletconnect_pair' 
-                          ? 'WalletConnect Handshake' 
-                          : 'Verifying Credentials...'}
-              </h3>
-              <p className="text-slate-400 text-xs mt-1">
-                {step === 'pick' && 'Select your active wallet provider to read on-chain state.'}
-                {step === 'welcome_back' && 'Reauthorize your secure cryptographic reputation index.'}
-                {step === 'setup' && 'Choose your unique pseudonym on the KARMA network.'}
-                {step === 'rainbowkit_connect' && `Establishing 1-click connection with ${selectedWallet?.name}...`}
-                {step === 'walletconnect_pair' && 'Scan standard QR bridge to link your mobile web3 keyset.'}
-                {step === 'connecting' && `Authorizing secure wallet handshake with ${selectedWallet?.name}...`}
-              </p>
-            </div>
-            {step !== 'connecting' && (
-              <button 
-                onClick={onClose} 
-                className="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.06] text-slate-400 hover:text-slate-100 hover:bg-white/[0.08] transition-all flex items-center justify-center text-xs cursor-pointer"
-              >
-                ✕
-              </button>
-            )}
-          </div>
 
-          <div className="h-[1px] bg-white/[0.06]" />
-
-          {/* Wallet List selector */}
-          {step === 'pick' && (
-            <div className="p-6 md:p-8 space-y-6">
-              
-              {/* Header/Subtitle section */}
-              <div className="text-center pb-1">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-300 font-mono uppercase tracking-widest mb-3 select-none">
-                  ⚡ SECURE GATEWAY CHECK
-                </div>
-                <h4 className="text-slate-200 text-xs font-semibold max-w-sm mx-auto leading-relaxed">
-                  Connect your decentralized key to compile a cryptographic credit reputation score
-                </h4>
-              </div>
-
-              <div className="space-y-3.5">
-                {WALLETS.map(w => (
-                  <button
-                    key={w.id}
-                    onClick={() => handlePickWallet(w)}
-                    className="w-full p-4 md:p-5 rounded-2xl flex items-center justify-between bg-white/[0.02] border border-white/[0.06] hover:bg-[#3b99fc]/5 hover:border-[#3b99fc]/40 hover:shadow-[0_0_15px_rgba(59,153,252,0.1)] transition-all text-left cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-[#3b99fc]/20 to-indigo-500/10 flex items-center justify-center text-3xl filter saturate-[1.1] group-hover:scale-105 group-hover:rotate-3 transition-transform">
-                        {w.icon}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-mono text-xs font-bold text-slate-100 uppercase tracking-wider">{w.name}</div>
-                        <div className="text-[10px] text-slate-400 mt-1 max-w-xs leading-normal">Link safe decentralized apps over mobile/desktop Web3 protocols</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0 pl-2">
-                      <span className="text-[9.5px] font-mono text-[#3b99fc] group-hover:text-purple-300 transition-colors uppercase font-bold tracking-wider hidden sm:inline">Connect Mobile</span>
-                      <span className="text-slate-500 group-hover:translate-x-1 transition-transform group-hover:text-slate-300">→</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              <div className="relative flex py-2 items-center">
-                <div className="flex-grow border-t border-white/[0.06]"></div>
-                <span className="flex-shrink mx-4 text-[9px] font-mono text-slate-500 uppercase tracking-widest font-black select-none">OR DEMO THE ECOSYSTEM</span>
-                <div className="flex-grow border-t border-white/[0.06]"></div>
-              </div>
-
-              {/* Sandbox and search routes */}
-              <div className="grid grid-cols-2 gap-3.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const mockWallet = { id: 'sandbox_wallet', name: 'Sandbox Spec', icon: '🎲', color: '#10b981', desc: 'Simulated Sandbox Account' };
-                    setSelectedWallet(mockWallet);
-                    const hexChars = '0123456789abcdef';
-                    let addr = '0x';
-                    for (let i = 0; i < 40; i++) addr += hexChars[Math.floor(Math.random() * 16)];
-                    setManualAddress(addr);
-                    setConnectMethod('sandbox');
-                    setStep('setup');
-                  }}
-                  className="p-4 rounded-2xl bg-emerald-500/[0.02] border border-emerald-500/15 hover:bg-emerald-500/[0.06] hover:border-emerald-500/30 transition-all text-center cursor-pointer group flex flex-col items-center justify-center space-y-1.5"
-                >
-                  <span className="text-2xl group-hover:scale-115 transition-transform">🎲</span>
-                  <div className="font-mono text-xs font-extrabold text-emerald-300">Sandbox ID</div>
-                  <p className="text-[9px] text-slate-400 leading-tight">Instant mockup stats</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const mockWallet = { id: 'manual_wallet', name: 'Manual Audit', icon: '✍️', color: '#818cf8', desc: 'Read-Only Key Address' };
-                    setSelectedWallet(mockWallet);
-                    setManualAddress('');
-                    setConnectMethod('manual');
-                    setStep('setup');
-                  }}
-                  className="p-4 rounded-2xl bg-indigo-500/[0.02] border border-indigo-500/15 hover:bg-indigo-500/[0.06] hover:border-indigo-500/30 transition-all text-center cursor-pointer group flex flex-col items-center justify-center space-y-1.5"
-                >
-                  <span className="text-2xl group-hover:scale-115 transition-transform">✍️</span>
-                  <div className="font-mono text-xs font-extrabold text-indigo-300">Read-Only Key</div>
-                  <p className="text-[9px] text-slate-400 leading-tight">Query any public address</p>
-                </button>
-              </div>
-
-              {/* Safety notice banner */}
-              <div className="p-3 bg-slate-900/60 border border-white/[0.04] rounded-xl text-center">
-                <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
-                  🔒 <strong>Verified Cryptographic Security</strong>: Connection is read-only. We never request private keys or transaction routing authority. Your assets remain secure inside your vault.
+            {/* ── Header ── */}
+            <div className="px-7 pt-7 pb-5 flex items-start justify-between border-b border-white/[0.04]">
+              <div>
+                <h3 className="font-extrabold text-[#f8fafc] text-xl" style={{ fontFamily: "'Syne', sans-serif" }}>
+                  {step === 'pick' && 'Connect Wallet'}
+                  {step === 'requesting' && 'Approve Connection'}
+                  {step === 'signing' && 'Sign to Verify'}
+                  {step === 'setup' && 'Set Up Profile'}
+                  {step === 'scanning' && 'Scanning On-Chain...'}
+                  {step === 'welcome_back' && 'Welcome Back'}
+                </h3>
+                <p className="text-slate-400 text-[11px] mt-1">
+                  {step === 'pick' && 'Choose how to connect your on-chain identity.'}
+                  {step === 'requesting' && 'Approve the connection in your wallet extension.'}
+                  {step === 'signing' && 'Sign the message to prove wallet ownership.'}
+                  {step === 'setup' && 'Choose a username for your Karma reputation profile.'}
+                  {step === 'scanning' && 'Analyzing your wallet activity across chains...'}
+                  {step === 'welcome_back' && 'Your session is still cached. Resume instantly.'}
                 </p>
               </div>
+              {step !== 'scanning' && step !== 'requesting' && step !== 'signing' && (
+                <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors border-none bg-transparent cursor-pointer p-1 ml-4 shrink-0">
+                  <X size={18} />
+                </button>
+              )}
             </div>
-          )}
 
-          {/* Modern RainbowKit + Wagmi connection simulation view overlay */}
-          {step === 'rainbowkit_connect' && selectedWallet && (
-            <div className="p-6 md:p-8 space-y-6">
-              <div className="py-2 text-center flex flex-col items-center space-y-5">
-                <div className="relative w-16 h-16 flex items-center justify-center">
-                  <div 
-                    className="absolute inset-0 rounded-full animate-ping pointer-events-none opacity-20"
-                    style={{ backgroundColor: selectedWallet.color }}
-                  />
-                  <div 
-                    className="absolute inset-1 rounded-full border-2 border-t-transparent animate-spin pointer-events-none"
-                    style={{ borderColor: selectedWallet.color, borderTopColor: 'transparent' }}
-                  />
-                  <span className="text-3xl z-10 select-none animate-bounce">{selectedWallet.icon}</span>
+            {/* ── STEP: pick ── */}
+            {step === 'pick' && (
+              <div className="p-7 space-y-4">
+                {connectionError && (
+                  <div className="flex items-start gap-3 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs leading-relaxed">
+                    <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                    <span>{connectionError}</span>
+                  </div>
+                )}
+
+                {/* Browser wallet section */}
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-slate-500 mb-2.5 font-bold">Browser Extension</p>
+                  {hasEthereum ? (
+                    <button
+                      onClick={() => { setMethod('browser'); connectBrowserWallet(); }}
+                      className="w-full p-4 rounded-2xl flex items-center justify-between bg-white/[0.03] border border-white/[0.08] hover:bg-purple-500/[0.08] hover:border-purple-500/30 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-purple-500/20 to-indigo-500/10 flex items-center justify-center text-2xl group-hover:scale-105 transition-transform">
+                          {detectedWallet?.icon || '🔌'}
+                        </div>
+                        <div className="text-left">
+                          <div className="font-bold text-slate-100 text-sm">{detectedWallet?.name || 'Browser Wallet'}</div>
+                          <div className="text-[10px] text-emerald-400 mt-0.5 font-mono">● Detected & Ready</div>
+                        </div>
+                      </div>
+                      <ChevronRight size={16} className="text-slate-500 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all" />
+                    </button>
+                  ) : (
+                    <div className="w-full p-4 rounded-2xl bg-white/[0.015] border border-white/[0.05]">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xl shrink-0">🔌</div>
+                        <div>
+                          <div className="font-bold text-slate-400 text-sm">No Wallet Detected</div>
+                          <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                            Install{' '}
+                            <a href="https://metamask.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 underline">MetaMask</a>
+                            {' '}or{' '}
+                            <a href="https://rabby.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 underline">Rabby</a>
+                            {' '}to connect your live wallet.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Other popular wallets (all use window.ethereum) */}
+                  {hasEthereum && detectedWallet && (
+                    <div className="mt-2 grid grid-cols-4 gap-2">
+                      {INJECTED_WALLETS.filter(w => w.id !== detectedWallet.id).map(w => (
+                        <button
+                          key={w.id}
+                          onClick={() => { setMethod('browser'); connectBrowserWallet(w); }}
+                          title={w.name}
+                          className="p-2.5 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.05] hover:border-white/[0.12] transition-all cursor-pointer flex flex-col items-center gap-1 group"
+                        >
+                          <span className="text-xl group-hover:scale-110 transition-transform">{w.icon}</span>
+                          <span className="text-[8.5px] text-slate-500 font-mono truncate w-full text-center">{w.name.split(' ')[0]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-1.5">
-                  <h4 className="font-extrabold text-[#f1f5f9] text-base uppercase tracking-wider font-sans">
-                    Connecting {selectedWallet.name}...
+                <div className="relative flex items-center">
+                  <div className="flex-grow border-t border-white/[0.05]" />
+                  <span className="mx-4 text-[9px] font-mono text-slate-600 uppercase tracking-widest font-bold">OR</span>
+                  <div className="flex-grow border-t border-white/[0.05]" />
+                </div>
+
+                {/* Alternative methods */}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => { setMethod('address'); setConnectionError(''); setStep('setup'); }}
+                    className="p-4 rounded-2xl bg-indigo-500/[0.03] border border-indigo-500/15 hover:bg-indigo-500/[0.07] hover:border-indigo-500/30 transition-all cursor-pointer group flex flex-col items-start gap-2 text-left"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-indigo-500/10 flex items-center justify-center">
+                      <PenLine size={16} className="text-indigo-400" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-200 text-xs">Enter Address</div>
+                      <div className="text-[9.5px] text-slate-400 mt-0.5">Check any ETH wallet read-only</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => { setMethod('demo'); setConnectionError(''); setStep('setup'); }}
+                    className="p-4 rounded-2xl bg-emerald-500/[0.03] border border-emerald-500/15 hover:bg-emerald-500/[0.07] hover:border-emerald-500/30 transition-all cursor-pointer group flex flex-col items-start gap-2 text-left"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                      <Sparkles size={16} className="text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-200 text-xs">Demo Mode</div>
+                      <div className="text-[9.5px] text-slate-400 mt-0.5">Explore with a sandbox ID</div>
+                    </div>
+                  </button>
+                </div>
+
+                <p className="text-center text-[9.5px] text-slate-600 leading-relaxed">
+                  🔒 Read-only. We never access private keys or sign transactions.
+                </p>
+              </div>
+            )}
+
+            {/* ── STEP: requesting ── */}
+            {step === 'requesting' && (
+              <div className="p-8 flex flex-col items-center text-center space-y-6">
+                <div className="relative w-20 h-20 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${detectedWallet?.color || '#a78bfa'}`, borderTopColor: 'transparent' }} />
+                  <span className="text-4xl">{detectedWallet?.icon || '🔌'}</span>
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-100 text-base">Open Your Wallet</h4>
+                  <p className="text-slate-400 text-xs mt-2 leading-relaxed max-w-[280px]">
+                    A connection request has been sent to <strong className="text-slate-200">{detectedWallet?.name || 'your wallet'}</strong>. Click <em>Connect</em> in the popup to continue.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setStep('pick'); setConnectionError(''); }}
+                  className="text-xs text-slate-500 hover:text-slate-300 underline border-none bg-transparent cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {/* ── STEP: signing ── */}
+            {step === 'signing' && (
+              <div className="p-8 flex flex-col items-center text-center space-y-6">
+                <div className="relative w-20 h-20 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-2 border-dashed border-purple-500/40 animate-spin [animation-duration:3s]" />
+                  <div className="w-14 h-14 rounded-full bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
+                    <WalletIcon size={22} className="text-purple-400" />
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-100 text-base">Sign the Message</h4>
+                  <p className="text-slate-400 text-xs mt-2 leading-relaxed max-w-[280px]">
+                    Check <strong className="text-slate-200">{detectedWallet?.name || 'your wallet'}</strong> for a signature request. This proves ownership — <em>no transaction or gas fee is needed</em>.
+                  </p>
+                </div>
+                <div className="w-full p-3 rounded-xl bg-slate-900/60 border border-white/[0.05] font-mono text-[10px] text-slate-400 text-left break-all">
+                  <span className="text-slate-600 block mb-1 uppercase text-[9px] tracking-wider">Connected Address</span>
+                  {address}
+                </div>
+                <button
+                  onClick={() => { setStep('pick'); setConnectionError(''); }}
+                  className="text-xs text-slate-500 hover:text-slate-300 underline border-none bg-transparent cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {/* ── STEP: setup ── */}
+            {step === 'setup' && (
+              <div className="p-7 space-y-5">
+                {/* Method indicator */}
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06] w-fit">
+                  <span className="text-sm">
+                    {method === 'browser' ? (detectedWallet?.icon || '🔌') : method === 'address' ? '✍️' : '🎲'}
+                  </span>
+                  <span className="text-xs font-mono text-slate-300">
+                    {method === 'browser'
+                      ? (detectedWallet?.name || 'Browser Wallet')
+                      : method === 'address'
+                        ? 'Read-Only Address'
+                        : 'Demo Mode'}
+                  </span>
+                  <button
+                    onClick={() => { setStep('pick'); setConnectionError(''); }}
+                    className="text-[9px] font-mono text-purple-400 hover:text-purple-300 underline border-none bg-transparent cursor-pointer ml-1"
+                  >
+                    Change
+                  </button>
+                </div>
+
+                {method === 'browser' && address && (
+                  <div className="p-3 rounded-xl bg-emerald-500/[0.05] border border-emerald-500/20">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                      <span className="text-[9px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Wallet Verified</span>
+                    </div>
+                    <p className="text-[10px] font-mono text-slate-300 break-all">{address}</p>
+                  </div>
+                )}
+
+                {/* Username input */}
+                <div>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-slate-400 mb-2 block font-bold">
+                    Username <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-purple-400/60 font-bold text-sm">@</span>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={e => { setUsername(e.target.value); setUsernameError(''); }}
+                      onKeyDown={e => e.key === 'Enter' && handleSetupConfirm()}
+                      placeholder="crypto_navigator"
+                      maxLength={20}
+                      autoFocus
+                      className="w-full pl-8 pr-4 py-3.5 rounded-xl border bg-white/[0.03] text-slate-100 text-sm font-medium outline-none transition-all placeholder:text-slate-600 focus:bg-white/[0.05] focus:border-purple-500/30"
+                      style={{ borderColor: usernameError ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.08)' }}
+                    />
+                  </div>
+                  {usernameError && <p className="text-rose-400 text-[11px] mt-1.5">{usernameError}</p>}
+                  <p className="text-[9px] text-slate-500 font-mono mt-1.5">Letters, numbers, underscores · 3–20 characters</p>
+                </div>
+
+                {/* Address input for manual mode */}
+                {method === 'address' && (
+                  <div>
+                    <label className="text-[10px] font-mono uppercase tracking-widest text-slate-400 mb-2 block font-bold">
+                      Ethereum Address <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={manualAddress}
+                      onChange={e => { setManualAddress(e.target.value); setManualAddressError(''); }}
+                      placeholder="0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+                      className="w-full px-4 py-3 rounded-xl border bg-white/[0.03] text-slate-100 text-xs font-mono outline-none transition-all focus:bg-white/[0.05] focus:border-indigo-500/30"
+                      style={{ borderColor: manualAddressError ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.08)' }}
+                    />
+                    {manualAddressError && <p className="text-rose-400 text-[11px] mt-1.5">{manualAddressError}</p>}
+                    <p className="text-[9px] text-slate-500 font-mono mt-1.5">Any valid 0x address or .eth ENS name</p>
+                  </div>
+                )}
+
+                {/* Privacy toggle */}
+                <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-white/[0.015] border border-white/[0.05]">
+                  <div>
+                    <div className="text-xs font-bold text-slate-200">Hide Wallet Address</div>
+                    <div className="text-[9.5px] text-slate-500 mt-0.5">Address stays private in leaderboards</div>
+                  </div>
+                  <button
+                    onClick={() => setHideWallet(p => !p)}
+                    className="w-11 h-6 rounded-full relative transition-all border outline-none cursor-pointer shrink-0"
+                    style={{ backgroundColor: hideWallet ? 'rgba(167,139,250,0.45)' : 'rgba(255,255,255,0.06)', borderColor: hideWallet ? '#a78bfa' : 'rgba(255,255,255,0.08)' }}
+                  >
+                    <div
+                      className="w-4 h-4 rounded-full bg-white absolute top-[4px] transition-all shadow"
+                      style={{ left: hideWallet ? '22px' : '4px' }}
+                    />
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleSetupConfirm}
+                  disabled={isSubmitting}
+                  className="w-full py-4 rounded-xl font-extrabold text-sm text-white transition-all hover:opacity-90 active:scale-[0.98] cursor-pointer border-none"
+                  style={{ background: 'linear-gradient(135deg, #a78bfa, #818cf8)', fontFamily: "'Syne', sans-serif" }}
+                >
+                  Compile My Karma Score →
+                </button>
+              </div>
+            )}
+
+            {/* ── STEP: welcome_back ── */}
+            {step === 'welcome_back' && savedProfile && (
+              <div className="p-7 space-y-5">
+                <div className="flex flex-col items-center text-center space-y-3">
+                  <div className="w-16 h-16 rounded-full flex items-center justify-center font-black text-slate-950 text-2xl shadow-lg"
+                    style={{ background: 'linear-gradient(135deg, #a78bfa, #818cf8)' }}>
+                    {savedProfile.username[0].toUpperCase()}
+                  </div>
+                  <div>
+                    <h4 className="text-white text-lg font-bold" style={{ fontFamily: "'Syne', sans-serif" }}>
+                      @{savedProfile.username}
+                    </h4>
+                    <p className="text-[10px] font-mono text-slate-400 mt-1 break-all">{savedProfile.address}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 p-4 rounded-xl bg-white/[0.015] border border-white/[0.05]">
+                  <div>
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block font-bold">Karma Score</span>
+                    <span className="text-sm font-bold text-slate-200 mt-1 flex items-center gap-1">
+                      <span className="text-purple-400">✧</span> {savedProfile.karmaScore}/1000
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block font-bold">Archetype</span>
+                    <span className="text-xs font-bold text-purple-400 font-mono mt-1 block">{savedProfile.personality || 'Visionary'}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <button
+                    onClick={handleWelcomeBackLogin}
+                    className="w-full py-3.5 rounded-xl font-extrabold text-sm text-white transition-all hover:opacity-90 active:scale-[0.98] cursor-pointer border-none"
+                    style={{ background: 'linear-gradient(135deg, #a78bfa, #818cf8)', fontFamily: "'Syne', sans-serif" }}
+                  >
+                    Reconnect Instantly
+                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => { setUsername(savedProfile.username); setHideWallet(savedProfile.hideWallet || false); setStep('setup'); }}
+                      className="flex-1 py-2.5 rounded-xl border border-white/[0.06] bg-white/[0.02] text-slate-400 text-xs hover:bg-white/[0.05] transition-all cursor-pointer"
+                    >
+                      Edit Profile
+                    </button>
+                    <button
+                      onClick={() => {
+                        try {
+                          const reg = JSON.parse(localStorage.getItem('karma_profiles_registry') || '{}');
+                          delete reg[savedProfile.address];
+                          localStorage.setItem('karma_profiles_registry', JSON.stringify(reg));
+                        } catch { /* ignore */ }
+                        setSavedProfile(null);
+                        setStep('pick');
+                      }}
+                      className="flex-1 py-2.5 rounded-xl border border-rose-500/20 bg-rose-500/[0.05] text-rose-400 text-xs hover:bg-rose-500/10 transition-all cursor-pointer"
+                    >
+                      Clear & Reset
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP: scanning ── */}
+            {step === 'scanning' && (
+              <div className="p-8 pb-10 flex flex-col items-center text-center space-y-6">
+                {/* Radar ring */}
+                <div className="relative w-28 h-28 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border border-purple-500/10 animate-pulse" />
+                  <div className="absolute inset-2 rounded-full border border-purple-500/20 animate-ping [animation-duration:3s]" />
+                  <div className="absolute inset-4 rounded-full border border-indigo-400/20 animate-spin [animation-duration:12s] border-dashed" />
+                  <svg className="absolute w-full h-full -rotate-90">
+                    <circle cx="56" cy="56" r="48" className="stroke-[#a78bfa]/10 stroke-2 fill-none" />
+                    <circle
+                      cx="56" cy="56" r="48"
+                      className="stroke-purple-500 stroke-[3px] fill-none transition-all duration-300"
+                      strokeDasharray={301.6}
+                      strokeDashoffset={301.6 - (301.6 * scanProgress) / 100}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <div className="w-16 h-16 rounded-full bg-slate-950/90 border border-purple-500/30 flex items-center justify-center text-3xl z-10"
+                    style={{ boxShadow: '0 0 25px rgba(167,139,250,0.2)' }}>
+                    {method === 'browser' ? (detectedWallet?.icon || '🔌') : method === 'address' ? '✍️' : '🎲'}
+                  </div>
+                  <div className="absolute -bottom-2 bg-slate-950 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-mono text-purple-300 font-bold z-20">
+                    {scanProgress}%
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="font-extrabold text-slate-100 text-base uppercase tracking-wider" style={{ fontFamily: "'Syne', sans-serif" }}>
+                    Karma Score Analysis
                   </h4>
-                  <p className="text-slate-400 text-[11px] leading-relaxed max-w-xs mx-auto font-mono">
-                    Wagmi + RainbowKit secure iframe wrapper
+                  <p className="text-slate-400 text-[11px] mt-1 max-w-[280px] mx-auto leading-relaxed">
+                    Reading on-chain activity across Ethereum, Base, and Polygon...
                   </p>
                 </div>
 
-                {/* Progress bar */}
-                <div className="w-full max-w-sm h-1.5 px-0.5 bg-slate-950 border border-white/[0.04] rounded-full overflow-hidden">
-                  <div 
-                    className="h-full transition-all duration-300 rounded-full" 
-                    style={{ 
-                      width: `${rainbowProgress}%`,
-                      backgroundColor: selectedWallet.color
-                    }}
-                  />
+                {/* Stage terminal */}
+                <div className="w-full bg-[#06060c]/60 p-4 rounded-2xl border border-white/[0.04] text-left space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="shrink-0">{SCAN_STAGES[scanStage].icon}</span>
+                    <div>
+                      <span className="text-[9px] font-mono text-slate-500 uppercase tracking-wider font-bold block">
+                        Phase {scanStage + 1} of {SCAN_STAGES.length}
+                      </span>
+                      <span className="text-xs font-bold text-slate-200 block mt-0.5">{SCAN_STAGES[scanStage].title}</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-mono border-t border-white/[0.03] pt-2">
+                    {SCAN_STAGES[scanStage].desc}
+                  </p>
                 </div>
 
-                {/* Simulated Stack Telemetry Step-by-Step Deck */}
-                <div className="w-full space-y-2.5 text-left bg-slate-900/60 p-4 border border-white/[0.05] rounded-2xl">
-                  <div className="text-[10px] uppercase font-mono tracking-widest text-slate-500 font-bold mb-1">
-                    System Telemetry Stack
-                  </div>
-
-                  {/* 1. Wagmi */}
-                  <div className="flex items-start gap-3 text-xs leading-none">
-                    <span className={`text-[11px] h-4 flex items-center ${rainbowProgress >= 25 ? 'text-emerald-400 font-bold' : 'text-slate-600 animate-pulse'}`}>
-                      {rainbowProgress >= 25 ? '✓' : '●'}
-                    </span>
-                    <div className="space-y-0.5">
-                      <div className={`font-semibold ${rainbowProgress >= 25 ? 'text-slate-300' : 'text-slate-500'}`}>
-                        Wagmi + RainbowKit Wallet Handshake
-                      </div>
-                      <div className="text-[9px] text-slate-500 font-mono">
-                        {rainbowProgress >= 25 ? 'Secure peer connector handshake established.' : 'Establishing Rabby standard Wagmi request...'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 2. Viem */}
-                  <div className="flex items-start gap-3 text-xs leading-none">
-                    <span className={`text-[11px] h-4 flex items-center ${rainbowProgress >= 50 ? 'text-emerald-400 font-bold' : rainbowProgress >= 25 ? 'text-slate-400 animate-pulse' : 'text-slate-600'}`}>
-                      {rainbowProgress >= 50 ? '✓' : '●'}
-                    </span>
-                    <div className="space-y-0.5">
-                      <div className={`font-semibold ${rainbowProgress >= 50 ? 'text-slate-300' : 'text-slate-500'}`}>
-                        Viem Ecosystem Blockchain Lookup
-                      </div>
-                      <div className="text-[9px] text-slate-500 font-mono">
-                        {rainbowProgress >= 50 ? 'Indexed gas stats, ERC20 holds, and transaction counts.' : rainbowProgress >= 25 ? 'Fetching block indices via Alchemy RPC...' : 'Queued.'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 3. Node/PostgreSQL Database Sync */}
-                  <div className="flex items-start gap-3 text-xs leading-none">
-                    <span className={`text-[11px] h-4 flex items-center ${rainbowProgress >= 75 ? 'text-emerald-400 font-bold' : rainbowProgress >= 50 ? 'text-slate-400 animate-pulse' : 'text-slate-600'}`}>
-                      {rainbowProgress >= 75 ? '✓' : '●'}
-                    </span>
-                    <div className="space-y-0.5">
-                      <div className={`font-semibold ${rainbowProgress >= 75 ? 'text-slate-300' : 'text-slate-500'}`}>
-                        PostgreSQL Database Profile Registry
-                      </div>
-                      <div className="text-[9px] text-slate-500 font-mono">
-                        {rainbowProgress >= 75 ? 'Registered public address in backend PostgreSQL tables.' : rainbowProgress >= 50 ? 'Verifying table entries and user constraints in Node.js...' : 'Queued.'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 4. Google AI Studio Parameters */}
-                  <div className="flex items-start gap-3 text-xs leading-none">
-                    <span className={`text-[11px] h-4 flex items-center ${rainbowProgress >= 100 ? 'text-emerald-400 font-bold' : rainbowProgress >= 75 ? 'text-slate-400 animate-pulse' : 'text-slate-600'}`}>
-                      {rainbowProgress >= 100 ? '✓' : '●'}
-                    </span>
-                    <div className="space-y-0.5">
-                      <div className={`font-semibold ${rainbowProgress >= 100 ? 'text-slate-300' : 'text-slate-500'}`}>
-                        Google AI Studio Gemini Model Calibration
-                      </div>
-                      <div className="text-[9px] text-slate-500 font-mono">
-                        {rainbowProgress >= 100 ? 'Gemini API configured for server-side cognitive scan.' : rainbowProgress >= 75 ? 'Formulating custom user reputation report...' : 'Queued.'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Animated status logs terminal */}
-                <div className="w-full text-left bg-[#050510] border border-white/[0.04] p-3 rounded-xl font-mono text-[9px] text-[#818cf8] mt-1 space-y-1">
-                  <div className="flex justify-between items-center text-slate-500 pb-1 border-b border-white/[0.03] mb-1.5 font-bold">
-                    <span>⚡ LOGSTREAM</span>
-                    <span className="text-[8px] px-1 bg-indigo-500/10 rounded">LIVE_REPUTATION</span>
-                  </div>
-                  {rainbowPhase === 'wagmi' && <div className="animate-pulse">⏳ [WAGMI] Handshaking with Injected Provider...</div>}
-                  {rainbowPhase === 'viem' && <div>✓ [WAGMI] Connected!<br/><span className="animate-pulse">⏳ [VIEM] Executing batch contract queries...</span></div>}
-                  {rainbowPhase === 'postgres' && <div>✓ [WAGMI] Connected!<br/>✓ [VIEM] On-chain reads completed.<br/><span className="animate-pulse">⏳ [POSTGRES] Synchronizing address record...</span></div>}
-                  {rainbowPhase === 'gemini' && <div>✓ [WAGMI] Connected!<br/>✓ [VIEM] On-chain reads completed.<br/>✓ [POSTGRES] Row committed to PostgreSQL.<br/><span className="animate-pulse">⏳ [AI_STUDIO] Warming server-side Gemini instance...</span></div>}
-                  {rainbowPhase === 'success' && <div className="text-emerald-400">✓ [WAGMI] Handshake resolved.<br/>✓ [VIEM] Blockchain read success.<br/>✓ [POSTGRES] Profile saved.<br/>✓ [AI_STUDIO] Gemini ready.<br/>🚀 1-CLICK CONNECTION SUCCESS!</div>}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Profile Name & Options step */}
-          {step === 'setup' && selectedWallet && (
-            <div className="p-6 md:p-8 space-y-6">
-              
-              {/* Wallet info indicator */}
-              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.08]">
-                <span className="text-sm">{selectedWallet.icon}</span>
-                <span className="text-xs font-semibold text-slate-300 font-mono">{selectedWallet.name}</span>
-                <button 
-                  onClick={() => setStep('pick')}
-                  className="text-[9px] font-mono uppercase text-purple-400 underline hover:text-purple-300 ml-2 border-none bg-none cursor-pointer"
-                >
-                  Change
-                </button>
-              </div>
-
-              {/* Verify Method Tab Deck */}
-              <div>
-                <label className="text-[10px] font-mono uppercase tracking-widest text-slate-500 mb-1.5 block font-bold">
-                  Credentials Source
-                </label>
-                <div className="grid grid-cols-3 gap-1 bg-slate-950/60 p-1 rounded-xl border border-white/[0.05]">
-                  {[
-                    { id: 'auto', label: '🔌 Web3 Check' },
-                    { id: 'manual', label: '✍️ Custom Key' },
-                    { id: 'sandbox', label: '🎲 Sandbox ID' },
-                  ].map(method => (
-                    <button
-                      key={method.id}
-                      type="button"
-                      onClick={() => {
-                        setConnectMethod(method.id as any);
-                        setManualAddressError('');
-                      }}
-                      className="py-2.5 rounded-lg text-[10px] font-bold font-sans cursor-pointer transition-all border-none focus:outline-none"
+                {/* Dot indicators */}
+                <div className="flex gap-2">
+                  {SCAN_STAGES.map((_, i) => (
+                    <div
+                      key={i}
+                      className="w-1.5 h-1.5 rounded-full transition-all duration-300"
                       style={{
-                        backgroundColor: connectMethod === method.id ? 'rgba(167, 139, 250, 0.12)' : 'transparent',
-                        color: connectMethod === method.id ? '#c084fc' : 'rgba(248, 250, 252, 0.45)',
+                        backgroundColor: i < scanStage ? '#10b981' : i === scanStage ? '#a78bfa' : 'rgba(255,255,255,0.08)',
+                        boxShadow: i === scanStage ? '0 0 8px #a78bfa' : 'none',
                       }}
-                    >
-                      {method.label}
-                    </button>
+                    />
                   ))}
                 </div>
               </div>
-
-              {/* Username Input Container */}
-              <div>
-                <label className="text-xs font-mono uppercase tracking-widest text-slate-400 mb-2 block">
-                  Assign Username <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-[#a78bfa]/60 font-bold text-sm">@</span>
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={e => { setUsername(e.target.value); setUsernameError(''); }}
-                    onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-                    placeholder="crypto_navigator"
-                    maxLength={20}
-                    className="w-full pl-8 pr-4 py-3.5 rounded-xl border bg-white/[0.03] text-slate-100 text-sm font-medium outline-none transition-all placeholder:text-slate-600 focus:bg-white/[0.05]"
-                    style={{
-                      borderColor: usernameError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(255, 255, 255, 0.08)',
-                    }}
-                  />
-                </div>
-                {usernameError && (
-                  <p className="text-rose-400 text-[11px] mt-1.5 font-sans">{usernameError}</p>
-                )}
-                <p className="text-[9px] text-slate-500 font-mono mt-1.5">
-                  Lowercase ASCII letters, digests, and underscores only. Length: 3-20 characters.
-                </p>
-              </div>
-
-              {/* Connection Source Sub-Views */}
-              {connectMethod === 'manual' && (
-                <div className="space-y-2 animate-fade-in text-left">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-slate-400 block font-bold">
-                    Ethereum Public Address or ENS <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={manualAddress}
-                    onChange={e => { setManualAddress(e.target.value); setManualAddressError(''); }}
-                    placeholder="0x71C7...976F or vitalik.eth"
-                    className="w-full px-4 py-3 rounded-xl border bg-white/[0.03] text-slate-100 text-xs font-mono outline-none transition-all focus:bg-white/[0.05]"
-                    style={{
-                      borderColor: manualAddressError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(255, 255, 255, 0.08)',
-                    }}
-                  />
-                  {manualAddressError && (
-                    <p className="text-rose-400 text-[11px] mt-1 font-sans">{manualAddressError}</p>
-                  )}
-                  <p className="text-[9px] text-slate-500 font-mono leading-relaxed">
-                    Provide any public read-only key to analyze. Your scores, streak calendars, and archetypes will compute deterministically relative to this ledger! No private key or signatures requested.
-                  </p>
-                </div>
-              )}
-
-              {connectMethod === 'auto' && (
-                <div className="p-3.5 rounded-xl bg-purple-500/5 border border-[#a78bfa]/10 space-y-1.5 animate-fade-in text-xs text-slate-300 text-left">
-                  <div className="font-bold flex items-center gap-1.5 text-purple-300">
-                    <span>🔌</span> Crypto Browser Check
-                  </div>
-                  <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
-                    Detecting active browser wallet environments. Click the scan trigger to retrieve your public key securely.
-                  </p>
-                  {typeof window !== 'undefined' && (!(window as any).ethereum || (window as any).ethereum.__isFallback) ? (
-                    <div className="text-[10px] text-amber-400 bg-amber-500/15 border border-amber-500/20 px-2.5 py-1.5 rounded-lg leading-relaxed font-mono">
-                      ⚠️ No active Web3 extension found or accessible in this iframe sandbox. Switch tabs to "✍️ Custom Key" or "🎲 Sandbox ID" to score any address manually!
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 rounded-lg font-mono">
-                      ✨ Real browser extension detected. Handshake ready!
-                    </div>
-                  )}
-                  {manualAddressError && (
-                    <p className="text-rose-400 text-[11px] mt-1.5 font-sans font-bold">{manualAddressError}</p>
-                  )}
-                </div>
-              )}
-
-              {connectMethod === 'sandbox' && (
-                <div className="p-3.5 rounded-xl bg-emerald-500/5 border border-emerald-500/15 space-y-1 animate-fade-in text-xs text-slate-400 text-left">
-                  <div className="font-bold flex items-center gap-1.5 text-emerald-300 mb-1">
-                    <span>🎲</span> Infinite Sandbox Demo ID
-                  </div>
-                  <p className="text-[10px] leading-relaxed font-sans">
-                    Generate an instant testbed identity. Instantly unlock beautiful stats maps, comprehensive holding records, and live AI reading reports. Perfect for quick preview of client features!
-                  </p>
-                </div>
-              )}
-
-              {/* Privacy Setting Toggle */}
-              <div className="p-4 rounded-xl bg-white/[0.015] border border-white/[0.05] flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-bold text-slate-200">Enforce Wallet pseudonymity</div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">Your public hex blockchain addresses will remain confidential in lists.</div>
-                </div>
-                
-                {/* Custom toggle slider */}
-                <button
-                  onClick={() => setHideWallet(prev => !prev)}
-                  className="w-11 h-6 rounded-full relative transition-all border outline-none cursor-pointer"
-                  style={{
-                    backgroundColor: hideWallet ? 'rgba(167,139,250,0.45)' : 'rgba(255,255,255,0.06)',
-                    borderColor: hideWallet ? '#a78bfa' : 'rgba(255,255,255,0.08)',
-                  }}
-                >
-                  <div 
-                    className="w-4.5 h-4.5 rounded-full bg-white absolute top-0.5 transition-all shadow-md"
-                    style={{ left: hideWallet ? '20px' : '3px' }}
-                  />
-                </button>
-              </div>
-
-              {/* Error display box */}
-              {manualAddressError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium text-left animate-fade-in flex gap-2 items-start">
-                  <span className="text-sm select-none">⚠️</span>
-                  <span className="leading-normal">{manualAddressError}</span>
-                </div>
-              )}
-
-              {/* Iframe warning guidance banner */}
-              {iframeWarning && (
-                <div className="p-3.5 bg-amber-500/5 border border-amber-500/20 rounded-xl text-left text-[10px] text-amber-300 leading-relaxed font-sans space-y-1">
-                  <div>💡 <strong>Sandbox Workaround Enabled</strong>:</div>
-                  <p>
-                    Because this preview is running in a secure, sandboxed iframe container, browser security restrictions may block Direct Extension communication. We bypassed the hang and generated a verified secure signature manually to ensure you can test the dashboard instantly!
-                  </p>
-                </div>
-              )}
-
-              {/* Action trigger button */}
-              <button
-                onClick={handleConfirm}
-                disabled={isCompiling}
-                className={`w-full py-4 rounded-xl border font-extrabold text-sm transition-all flex items-center justify-center gap-2.5 ${
-                  isCompiling ? 'opacity-80 cursor-not-allowed text-purple-200' : 'hover:opacity-90 active:scale-[0.98] text-white cursor-pointer'
-                }`}
-                style={{
-                  background: isCompiling ? 'rgba(167, 139, 250, 0.15)' : 'linear-gradient(135deg, #a78bfa, #818cf8)',
-                  borderColor: isCompiling ? 'rgba(167, 139, 250, 0.4)' : 'transparent',
-                  fontFamily: "'Syne', sans-serif"
-                }}
-              >
-                {isCompiling ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-purple-300 border-t-transparent rounded-full animate-spin" />
-                    <span>⚡ Authenicating Signature...</span>
-                  </>
-                ) : (
-                  <span>Compile My Karma Score</span>
-                )}
-              </button>
-            </div>
-          )}
-
-          {/* Welcome back profile quick lock */}
-          {step === 'welcome_back' && selectedWallet && savedProfile && (
-            <div className="p-6 md:p-8 space-y-6">
-              <div className="flex flex-col items-center text-center">
-                <div 
-                  className="w-16 h-16 rounded-full flex items-center justify-center font-black text-slate-100 text-2xl mb-3 shadow-lg"
-                  style={{
-                    background: 'linear-gradient(135deg, #a78bfa, #818cf8)',
-                  }}
-                >
-                  {savedProfile.username[0].toUpperCase()}
-                </div>
-                <h4 className="text-white text-lg font-bold" style={{ fontFamily: "'Syne', sans-serif" }}>
-                  Welcome Back, @{savedProfile.username}!
-                </h4>
-                <div className="flex items-center gap-1.5 mt-1 px-3 py-1 rounded-full bg-white/[0.03] border border-white/[0.06] select-all">
-                  <span className="text-xs">{selectedWallet.icon}</span>
-                  <span className="text-[10px] text-slate-400 font-mono">
-                    {savedProfile.hideWallet ? 'Wallet address pseudonymized' : savedProfile.address}
-                  </span>
-                </div>
-              </div>
-
-              {/* Stats showcase panel */}
-              <div className="grid grid-cols-2 gap-3 p-4 rounded-xl bg-white/[0.015] border border-white/[0.05]">
-                <div>
-                  <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block font-bold">Reputation</span>
-                  <span className="text-sm font-bold text-slate-200 mt-1 inline-flex items-center gap-1">
-                    <span className="text-purple-400">✧</span> {savedProfile.karmaScore}/100
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest block font-medium">Archetype</span>
-                  <span className="text-xs font-bold text-[#a78bfa] font-mono mt-1 block truncate" title={savedProfile.personality}>
-                    {savedProfile.personality || 'Visionary'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <button
-                  onClick={() => {
-                    setStep('connecting');
-                    setTimeout(() => {
-                      onConnect({
-                        wallet: selectedWallet,
-                        username: savedProfile.username,
-                        hideWallet: savedProfile.hideWallet,
-                        address: savedProfile.address,
-                      });
-                    }, 4200);
-                  }}
-                  className="w-full py-4 rounded-xl border-none text-white font-extrabold text-sm transition-all cursor-pointer hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
-                  style={{
-                    background: 'linear-gradient(135deg, #a78bfa, #818cf8)',
-                    fontFamily: "'Syne', sans-serif"
-                  }}
-                >
-                  Authorize & Login Instantly
-                </button>
-
-                <div className="flex items-center justify-between text-xs px-1">
-                  <button
-                    onClick={() => {
-                      setUsername(savedProfile.username);
-                      setHideWallet(savedProfile.hideWallet);
-                      setStep('setup');
-                    }}
-                    className="text-[11px] font-mono text-slate-400 hover:text-purple-400 underline border-none bg-none cursor-pointer"
-                  >
-                    Edit profile parameters
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (selectedWallet) {
-                        try {
-                          const registryRaw = localStorage.getItem('karma_profiles_registry');
-                          if (registryRaw) {
-                            const registry = JSON.parse(registryRaw);
-                            delete registry[selectedWallet.id];
-                            localStorage.setItem('karma_profiles_registry', JSON.stringify(registry));
-                          }
-                        } catch (e) {
-                          console.warn('Failed clearing cached profile:', e);
-                        }
-                      }
-                      setSavedProfile(null);
-                      setStep('pick');
-                    }}
-                    className="text-[11px] font-mono text-slate-400 hover:text-slate-300 underline border-none bg-none cursor-pointer"
-                  >
-                    Disconnect & Reset Cache
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Connecting Handshake Simulation */}
-          {step === 'connecting' && selectedWallet && (
-            <div className="p-8 pb-10 text-center flex flex-col items-center space-y-6" id="holographic-reputation-scanner">
-              
-              {/* Radar scanner visual container */}
-              <div className="relative w-28 h-28 flex items-center justify-center">
-                {/* Simulated outer radar radar loops */}
-                <div className="absolute inset-0 rounded-full border border-purple-500/10 animate-pulse" />
-                <div className="absolute inset-2 rounded-full border border-purple-500/20 animate-ping [animation-duration:3s]" />
-                <div className="absolute inset-4 rounded-full border border-indigo-400/20 animate-spin [animation-duration:12s] border-dashed" />
-                <div className="absolute inset-6 rounded-full border border-indigo-400/10" />
-
-                {/* Animated progress ring overlay */}
-                <svg className="absolute w-full h-full -rotate-90">
-                  <circle
-                    cx="56"
-                    cy="56"
-                    r="48"
-                    className="stroke-[#a78bfa]/10 stroke-2 fill-none"
-                  />
-                  <circle
-                    cx="56"
-                    cy="56"
-                    r="48"
-                    className="stroke-purple-500 stroke-[3px] fill-none transition-all duration-300"
-                    strokeDasharray={301.6}
-                    strokeDashoffset={301.6 - (301.6 * scanProgress) / 100}
-                    strokeLinecap="round"
-                  />
-                </svg>
-
-                {/* Main wallet token icon in visual center */}
-                <div 
-                  className="w-16 h-16 rounded-full shadow-2xl bg-slate-950/90 border flex flex-col items-center justify-center text-3xl font-bold font-mono transition-transform duration-300 z-10"
-                  style={{
-                    borderColor: `${selectedWallet.color}44`,
-                    boxShadow: `0 0 25px ${selectedWallet.color}25`
-                  }}
-                >
-                  <span className="scale-110">{selectedWallet.icon}</span>
-                </div>
-
-                {/* Floating percentage badge */}
-                <div className="absolute -bottom-2 bg-slate-950 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-mono text-purple-300 font-bold z-20 shadow-md">
-                  {scanProgress}% Compiled
-                </div>
-              </div>
-
-              {/* Text metadata */}
-              <div className="w-full space-y-2">
-                <h4 className="font-extrabold text-[#f1f5f9] text-base uppercase tracking-wider" style={{ fontFamily: "'Syne', sans-serif" }}>
-                  Karma Registry Analyzer
-                </h4>
-                <p className="text-slate-400 text-[11px] leading-relaxed max-w-sm mx-auto font-sans">
-                  Querying globally distributed ledger states to synthesize credit scoring nodes.
-                </p>
-              </div>
-
-              {/* Dynamic scrolling check stages tracking bar */}
-              <div className="w-full bg-[#06060c]/60 p-4 rounded-2xl border border-white/[0.04] text-left space-y-3 relative" id="scan-feedback-terminal">
-                <div className="flex items-center gap-2.5">
-                  <span className="shrink-0">{scanStages[scanStage].icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider font-bold block">
-                      Analytic Phase {scanStage + 1} of 5
-                    </span>
-                    <span className="text-xs font-bold text-slate-200 block truncate mt-0.5">
-                      {scanStages[scanStage].title}
-                    </span>
-                  </div>
-                </div>
-                
-                <p className="text-[10px] text-slate-400 font-mono leading-relaxed border-t border-white/[0.03] pt-2">
-                  {scanStages[scanStage].desc}
-                </p>
-              </div>
-
-              {/* Interactive micro progress lights */}
-              <div className="flex gap-2">
-                {scanStages.map((_, sIdx) => (
-                  <div 
-                    key={sIdx}
-                    className="w-1.5 h-1.5 rounded-full transition-all duration-300"
-                    style={{
-                      backgroundColor: sIdx < scanStage 
-                        ? '#10b981' 
-                        : sIdx === scanStage 
-                          ? '#a78bfa' 
-                          : 'rgba(255, 255, 255, 0.08)',
-                      boxShadow: sIdx === scanStage ? '0 0 8px #a78bfa' : 'none',
-                    }}
-                  />
-                ))}
-              </div>
-
-            </div>
-          )}
+            )}
 
           </GlassCard>
         </div>
@@ -1200,7 +744,9 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
   );
 }
 
-// ── Disconnect Profile Dialog ──
+// ─────────────────────────────────────────────
+// DisconnectModal
+// ─────────────────────────────────────────────
 interface DisconnectProps {
   user: User;
   onDisconnect: () => void;
@@ -1209,32 +755,31 @@ interface DisconnectProps {
 
 export function DisconnectModal({ user, onDisconnect, onClose }: DisconnectProps) {
   return (
-    <div className="fixed inset-0 z-[200] overflow-y-auto animate-fade-in" id="disconnect-modal-overlay">
+    <div className="fixed inset-0 z-[200] overflow-y-auto" id="disconnect-modal-overlay">
       <div onClick={onClose} className="fixed inset-0 bg-slate-950/80 backdrop-blur-md" />
       <div className="flex min-h-screen items-center justify-center p-4 sm:p-6">
-        <div className="relative w-full max-w-[380px] transform animate-scale-up" style={{ animation: 'fadeUp 0.2s ease-out' }}>
+        <div className="relative w-full max-w-[380px]" style={{ animation: 'fadeUp 0.2s ease-out' }}>
           <GlassCard style={{ padding: 28 }}>
-          <h3 className="font-extrabold text-[#f8fafc] text-xl mb-2" style={{ fontFamily: "'Syne', sans-serif" }}>
-            Disconnect Reputation
-          </h3>
-          <p className="text-slate-400 text-sm leading-relaxed mb-6">
-            You are signing out of <strong className="text-purple-400">@{user.username}</strong> on-chain view. Your compiled records, holding days, and streaks will persist safely inside the decentralized index.
-          </p>
-
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className="flex-1 py-3 rounded-lg border border-white/5 bg-white/5 text-slate-300 font-medium text-xs hover:bg-white/10 transition-all cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={onDisconnect}
-              className="flex-1 py-3 rounded-lg border border-rose-500/20 bg-rose-500/10 text-rose-400 font-bold text-xs hover:bg-rose-500/20 transition-all cursor-pointer"
-            >
-              Sign Out
-            </button>
-          </div>
+            <h3 className="font-extrabold text-[#f8fafc] text-xl mb-2" style={{ fontFamily: "'Syne', sans-serif" }}>
+              Disconnect Reputation
+            </h3>
+            <p className="text-slate-400 text-sm leading-relaxed mb-6">
+              You are signing out of <strong className="text-purple-400">@{user.username}</strong>. Your scores and streaks remain saved.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={onClose}
+                className="flex-1 py-3 rounded-lg border border-white/5 bg-white/5 text-slate-300 font-medium text-xs hover:bg-white/10 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={onDisconnect}
+                className="flex-1 py-3 rounded-lg border border-rose-500/20 bg-rose-500/10 text-rose-400 font-bold text-xs hover:bg-rose-500/20 transition-all cursor-pointer"
+              >
+                Sign Out
+              </button>
+            </div>
           </GlassCard>
         </div>
       </div>
@@ -1242,7 +787,9 @@ export function DisconnectModal({ user, onDisconnect, onClose }: DisconnectProps
   );
 }
 
-// ── Edit Profile Modal Dial ──
+// ─────────────────────────────────────────────
+// EditProfileModal
+// ─────────────────────────────────────────────
 interface EditProps {
   user: User;
   onSave: (updated: User) => void;
@@ -1256,99 +803,64 @@ export function EditProfileModal({ user, onSave, onClose }: EditProps) {
 
   function handleSave() {
     const trimmed = username.trim();
-    if (!trimmed || trimmed.length < 3) {
-      setError('Username must be at least 3 characters.');
-      return;
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(trimmed)) {
-      setError('Only letters, numbers, and underscores are compiled.');
-      return;
-    }
+    if (!trimmed || trimmed.length < 3) { setError('Username must be at least 3 characters.'); return; }
+    if (!/^[a-zA-Z0-9_]+$/.test(trimmed)) { setError('Only letters, numbers, and underscores allowed.'); return; }
     setError('');
-    onSave({
-      ...user,
-      username: trimmed,
-      hideWallet,
-    });
+    onSave({ ...user, username: trimmed, hideWallet });
   }
 
   return (
-    <div className="fixed inset-0 z-[200] overflow-y-auto animate-fade-in" id="edit-profile-modal-overlay">
+    <div className="fixed inset-0 z-[200] overflow-y-auto" id="edit-profile-modal-overlay">
       <div onClick={onClose} className="fixed inset-0 bg-slate-950/80 backdrop-blur-md" />
       <div className="flex min-h-screen items-center justify-center p-4 sm:p-6">
         <div className="relative w-full max-w-[400px]" style={{ animation: 'fadeUp 0.25s ease' }}>
           <GlassCard style={{ padding: 28 }}>
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="font-extrabold text-[#f8fafc] text-lg" style={{ fontFamily: "'Syne', sans-serif" }}>
-              Edit Profile
-            </h3>
-            <button 
-              onClick={onClose}
-              className="text-slate-400 hover:text-white text-xs bg-transparent border-none cursor-pointer"
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="space-y-5">
-            <div>
-              <label className="text-[10px] font-mono uppercase tracking-widest text-slate-400 mb-2 block">
-                Assign Username
-              </label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-[#a78bfa]/60 font-bold text-sm">@</span>
-                <input
-                  type="text"
-                  value={username}
-                  onChange={e => { setUsername(e.target.value); setError(''); }}
-                  className="w-full pl-8 pr-4 py-3 rounded-xl border bg-white/[0.03] text-slate-100 text-sm font-medium outline-none transition-all placeholder:text-slate-600 focus:bg-white/[0.05]"
-                  style={{
-                    borderColor: error ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.08)',
-                  }}
-                />
-              </div>
-              {error && <p className="text-rose-400 text-xs mt-1.5">{error}</p>}
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-extrabold text-[#f8fafc] text-lg" style={{ fontFamily: "'Syne', sans-serif" }}>Edit Profile</h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white text-xs bg-transparent border-none cursor-pointer"><X size={16} /></button>
             </div>
 
-            <div className="p-4 rounded-xl bg-white/[0.015] border border-white/[0.05] flex items-center justify-between gap-4">
+            <div className="space-y-5">
               <div>
-                <div className="text-xs font-bold text-slate-200">Enforce Wallet Pseudonymity</div>
-                <div className="text-[10px] text-slate-500 mt-0.5">Hides addresses in leaderboards.</div>
+                <label className="text-[10px] font-mono uppercase tracking-widest text-slate-400 mb-2 block font-bold">Username</label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-purple-400/60 font-bold text-sm">@</span>
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={e => { setUsername(e.target.value); setError(''); }}
+                    className="w-full pl-8 pr-4 py-3 rounded-xl border bg-white/[0.03] text-slate-100 text-sm outline-none transition-all focus:bg-white/[0.05]"
+                    style={{ borderColor: error ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.08)' }}
+                  />
+                </div>
+                {error && <p className="text-rose-400 text-xs mt-1.5">{error}</p>}
               </div>
-              <button
-                onClick={() => setHideWallet(prev => !prev)}
-                className="w-11 h-6 rounded-full relative transition-all border outline-none cursor-pointer"
-                style={{
-                  backgroundColor: hideWallet ? 'rgba(167,139,250,0.45)' : 'rgba(255,255,255,0.06)',
-                  borderColor: hideWallet ? '#a78bfa' : 'rgba(255,255,255,0.08)',
-                }}
-              >
-                <div 
-                  className="w-4.5 h-4.5 rounded-full bg-white absolute top-0.5 transition-all shadow-md"
-                  style={{ left: hideWallet ? '20px' : '3px' }}
-                />
-              </button>
-            </div>
 
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={onClose}
-                className="flex-1 py-3 rounded-xl border border-white/5 bg-white/5 text-slate-300 text-xs hover:bg-white/10 transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                className="flex-1 py-3 rounded-xl text-white font-extrabold text-xs hover:opacity-90 transition-all cursor-pointer"
-                style={{
-                  background: 'linear-gradient(135deg, #a78bfa, #818cf8)',
-                  fontFamily: "'Syne', sans-serif"
-                }}
-              >
-                Save Changes
-              </button>
+              <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-white/[0.015] border border-white/[0.05]">
+                <div>
+                  <div className="text-xs font-bold text-slate-200">Hide Wallet Address</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Hides address in leaderboards.</div>
+                </div>
+                <button
+                  onClick={() => setHideWallet(p => !p)}
+                  className="w-11 h-6 rounded-full relative transition-all border outline-none cursor-pointer shrink-0"
+                  style={{ backgroundColor: hideWallet ? 'rgba(167,139,250,0.45)' : 'rgba(255,255,255,0.06)', borderColor: hideWallet ? '#a78bfa' : 'rgba(255,255,255,0.08)' }}
+                >
+                  <div className="w-4 h-4 rounded-full bg-white absolute top-[4px] transition-all shadow" style={{ left: hideWallet ? '22px' : '4px' }} />
+                </button>
+              </div>
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={onClose} className="flex-1 py-3 rounded-xl border border-white/5 bg-white/5 text-slate-300 text-xs hover:bg-white/10 transition-all cursor-pointer">Cancel</button>
+                <button
+                  onClick={handleSave}
+                  className="flex-1 py-3 rounded-xl text-white font-extrabold text-xs hover:opacity-90 transition-all cursor-pointer border-none"
+                  style={{ background: 'linear-gradient(135deg, #a78bfa, #818cf8)', fontFamily: "'Syne', sans-serif" }}
+                >
+                  Save Changes
+                </button>
+              </div>
             </div>
-          </div>
           </GlassCard>
         </div>
       </div>
