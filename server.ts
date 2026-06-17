@@ -291,6 +291,50 @@ app.post('/api/auth/verify', async (req, res) => {
   }
 });
 
+// ── API: Global $AURA supply distribution stats (public, no auth) ──
+app.get('/api/aura/global', async (req, res) => {
+  try {
+    const profiles = await getAllProfiles();
+
+    let totalDistributed = 0;
+    let totalClaimEvents = 0;
+    const claimerList: { username: string; address: string; hideWallet: boolean; totalClaimed: number; streak: number; personality: string }[] = [];
+
+    for (const p of profiles) {
+      const claimed = p.totalAuraClaimed ?? p.auraPoints ?? 0;
+      totalDistributed += claimed;
+      totalClaimEvents += (p.auraClaimHistory?.length ?? 0);
+      if (claimed > 0) {
+        claimerList.push({
+          username: p.username,
+          address: p.address,
+          hideWallet: p.hideWallet,
+          totalClaimed: claimed,
+          streak: p.streak ?? 0,
+          personality: p.personality ?? 'Explorer',
+        });
+      }
+    }
+
+    claimerList.sort((a, b) => b.totalClaimed - a.totalClaimed);
+    const top10 = claimerList.slice(0, 10);
+
+    res.json({
+      totalSupply: 7_000_000_000_000,
+      totalDistributed,
+      totalClaimers: claimerList.length,
+      totalClaimEvents,
+      percentDistributed: (totalDistributed / 7_000_000_000_000) * 100,
+      remainingSupply: 7_000_000_000_000 - totalDistributed,
+      top10Claimers: top10,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[AURA] global stats error:', err);
+    res.status(500).json({ error: 'Failed to load global aura stats.' });
+  }
+});
+
 // ── API: Get aura stats for a wallet ──
 app.get('/api/aura/stats/:address', async (req, res) => {
   try {

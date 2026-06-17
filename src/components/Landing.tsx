@@ -5,6 +5,7 @@ import { useLanguage } from '../context/LanguageContext';
 import ScoreChecker from './ScoreChecker';
 import SovereignGuideSimulator from './SovereignGuideSimulator';
 import NavigationVideo from './NavigationVideo';
+import AuraSupplyTracker from './AuraSupplyTracker';
 
 interface LandingProps {
   onShowConnect: () => void;
@@ -657,6 +658,9 @@ export default function Landing({ onShowConnect, onShowManifesto, user }: Landin
           ))}
         </div>
       </div>
+
+      {/* ── $AURA Global Supply Tracker — public, visible to anyone ── */}
+      <AuraSupplyTracker onShowConnect={onShowConnect} />
 
       {/* CTA Footer section */}
       <div className="py-24 px-6 text-center bg-slate-950/30 border-t border-white/[0.03]">
