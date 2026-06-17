@@ -25,7 +25,7 @@ dotenv.config();
 
 // Create Express container
 const app = express();
-const PORT = 3000;
+const PORT = 5000;
 
 // Ensure passports_saved directory exists on bootstrap
 const PASSPORTS_DIR = path.join(process.cwd(), 'passports_saved');
