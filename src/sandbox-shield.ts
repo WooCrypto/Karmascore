@@ -75,6 +75,9 @@ if (typeof window !== 'undefined') {
               return getFallback(this).length;
             }
           },
+          set() {
+            // Safe silent ignore for write attempts on the readonly length property
+          },
           configurable: true
         });
       }
@@ -209,12 +212,19 @@ if (typeof window !== 'undefined') {
       },
 
       defineProperty(target, prop, descriptor) {
+        const safeDesc = { ...descriptor };
+        safeDesc.configurable = true;
+        if (safeDesc.get) {
+          safeDesc.set = safeDesc.set || (() => {});
+        } else {
+          safeDesc.writable = true;
+        }
         try {
-          Object.defineProperty(target, prop, descriptor);
+          Object.defineProperty(target, prop, safeDesc);
         } catch (e) {}
         try {
           if (realStorage) {
-            Object.defineProperty(realStorage, prop, descriptor);
+            Object.defineProperty(realStorage, prop, safeDesc);
           }
         } catch (e) {}
         return true;
@@ -226,6 +236,11 @@ if (typeof window !== 'undefined') {
             const desc = Reflect.getOwnPropertyDescriptor(realStorage, prop);
             if (desc) {
               desc.configurable = true;
+              if (desc.get) {
+                desc.set = desc.set || (() => {});
+              } else {
+                desc.writable = true;
+              }
               return desc;
             }
           }
@@ -234,6 +249,11 @@ if (typeof window !== 'undefined') {
         const targetDesc = Reflect.getOwnPropertyDescriptor(target, prop);
         if (targetDesc) {
           targetDesc.configurable = true;
+          if (targetDesc.get) {
+            targetDesc.set = targetDesc.set || (() => {});
+          } else {
+            targetDesc.writable = true;
+          }
           return targetDesc;
         }
 
@@ -350,6 +370,7 @@ if (typeof window !== 'undefined') {
   const makeSafeEthereumProxy = (realEth: any): any => {
     const fallbackEth = {
       isMetaMask: true,
+      __isFallback: true,
       request: async (args: any) => {
         console.log('Shielded sandbox ethereum.request called:', args);
         return [];
@@ -366,7 +387,27 @@ if (typeof window !== 'undefined') {
     // because all fields on the target are fully configurable.
     const targetBuffer: Record<string, any> = {};
     try {
-      Object.assign(targetBuffer, activeSource);
+      const keys = Reflect.ownKeys(activeSource);
+      for (const k of keys) {
+        try {
+          const desc = Reflect.getOwnPropertyDescriptor(activeSource, k);
+          if (desc) {
+            desc.configurable = true;
+            if (desc.get) {
+              const val = activeSource[k];
+              Object.defineProperty(targetBuffer, k, {
+                value: val,
+                writable: true,
+                configurable: true,
+                enumerable: desc.enumerable !== undefined ? desc.enumerable : true
+              });
+            } else {
+              desc.writable = true;
+              Object.defineProperty(targetBuffer, k, desc);
+            }
+          }
+        } catch (copyErr) {}
+      }
     } catch (e) {}
 
     return new Proxy(targetBuffer, {
@@ -397,11 +438,18 @@ if (typeof window !== 'undefined') {
         return true;
       },
       defineProperty(target, prop, descriptor) {
+        const safeDesc = { ...descriptor };
+        safeDesc.configurable = true;
+        if (safeDesc.get) {
+          safeDesc.set = safeDesc.set || (() => {});
+        } else {
+          safeDesc.writable = true;
+        }
         try {
-          Object.defineProperty(target, prop, descriptor);
+          Object.defineProperty(target, prop, safeDesc);
         } catch (e) {}
         try {
-          Object.defineProperty(activeSource, prop, descriptor);
+          Object.defineProperty(activeSource, prop, safeDesc);
         } catch (e) {}
         return true;
       },
@@ -428,6 +476,11 @@ if (typeof window !== 'undefined') {
         const desc = sourceDesc || targetDesc;
         if (desc) {
           desc.configurable = true; // Ensure always configurable to avoid invariant traps
+          if (desc.get) {
+            desc.set = desc.set || (() => {});
+          } else {
+            desc.writable = true;
+          }
           return desc;
         }
         return undefined;

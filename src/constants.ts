@@ -60,7 +60,12 @@ export const AURAS: Aura[] = [
 ];
 
 export const WALLETS: Wallet[] = [
-  { id: 'walletconnect', name: 'WalletConnect', icon: '◈', color: '#3b99fc', desc: 'Any mobile wallet' },
+  { id: 'rabby', name: 'Rabby Wallet', icon: '🐰', color: '#8672FF', desc: '1-Click Wagmi connection' },
+  { id: 'metamask', name: 'MetaMask', icon: '🦊', color: '#f6851b', desc: 'Injected MetaMask browser extension' },
+  { id: 'coinbasewallet', name: 'Coinbase Wallet', icon: '🔵', color: '#0052ff', desc: 'Coinbase wallet protocol' },
+  { id: 'rainbow', name: 'Rainbow', icon: '🌈', color: '#ff4d82', desc: 'Sleek designer mobile wallet' },
+  { id: 'phantom', name: 'Phantom (EVM)', icon: '👻', color: '#ab9ff2', desc: 'Solana & Ethereum EVM' },
+  { id: 'sandbox', name: 'Sandbox Pass (Demo)', icon: '🛡️', color: '#10b981', desc: 'Simulation demo - always active' }
 ];
 
 export const BASE_LEADERBOARD: LeaderboardRow[] = [
