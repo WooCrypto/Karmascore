@@ -63,6 +63,16 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+export interface AuraClaimRecord {
+  id: string;
+  timestamp: string;
+  amount: number;
+  multiplier: number;
+  streak: number;
+  txHash: string;
+  status: 'Settled' | 'Pending Distribution';
+}
+
 export interface UserProfile {
   address: string;
   username: string;
@@ -79,7 +89,9 @@ export interface UserProfile {
   karmaScore: number;
   personality: string;
   auraPoints: number;
+  totalAuraClaimed: number;
   lastClaimedAt: string;
+  auraClaimHistory: AuraClaimRecord[];
   activities: any[];
   categories: { label: string; value: number; color: string; icon: string }[];
   scores: {

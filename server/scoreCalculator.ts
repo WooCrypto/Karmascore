@@ -258,7 +258,9 @@ export function computeKarmaProfile(
     karmaScore,
     personality,
     auraPoints: 50 + (hash % 500),
+    totalAuraClaimed: 50 + (hash % 500),
     lastClaimedAt: '',
+    auraClaimHistory: [],
     activities,
     categories,
     scores: {

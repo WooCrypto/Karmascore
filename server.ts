@@ -291,6 +291,96 @@ app.post('/api/auth/verify', async (req, res) => {
   }
 });
 
+// ── API: Get aura stats for a wallet ──
+app.get('/api/aura/stats/:address', async (req, res) => {
+  try {
+    const address = req.params.address?.toLowerCase();
+    if (!address) return res.status(400).json({ error: 'Address required.' });
+    const profile = await getUserProfile(address);
+    if (!profile) return res.status(404).json({ error: 'Profile not found.' });
+    const today = new Date().toISOString().split('T')[0];
+    res.json({
+      auraPoints: profile.auraPoints || 0,
+      totalAuraClaimed: profile.totalAuraClaimed || profile.auraPoints || 0,
+      lastClaimedAt: profile.lastClaimedAt || '',
+      claimedToday: profile.lastClaimedAt === today,
+      streak: profile.streak || 0,
+      username: profile.username,
+      auraClaimHistory: profile.auraClaimHistory || [],
+    });
+  } catch (err) {
+    console.error('[AURA] stats error:', err);
+    res.status(500).json({ error: 'Failed to load aura stats.' });
+  }
+});
+
+// ── API: Claim daily aura points ──
+app.post('/api/aura/claim', async (req, res) => {
+  try {
+    const { address } = req.body;
+    if (!address) return res.status(400).json({ error: 'Address required.' });
+    const norm = address.toLowerCase();
+
+    const profile = await getUserProfile(norm);
+    if (!profile) return res.status(404).json({ error: 'Profile not found. Connect wallet first.' });
+
+    const today = new Date().toISOString().split('T')[0];
+    if (profile.lastClaimedAt === today) {
+      return res.status(409).json({
+        error: 'Already claimed today.',
+        alreadyClaimed: true,
+        auraPoints: profile.auraPoints,
+        totalAuraClaimed: profile.totalAuraClaimed || profile.auraPoints,
+        lastClaimedAt: profile.lastClaimedAt,
+        auraClaimHistory: profile.auraClaimHistory || [],
+      });
+    }
+
+    const streak = profile.streak || 1;
+    const basePoints = streak * 250;
+    const multiplier = parseFloat((1 + streak * 0.15).toFixed(2));
+    const claimedAmount = Math.round(basePoints * multiplier);
+
+    const seed = (norm + today).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+    const txHash = `0x${((seed * 91823) % 0xffffff).toString(16).padStart(6,'0')}aura${streak}k${claimedAmount.toString(16)}`;
+
+    const claimRecord = {
+      id: `claim-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      amount: claimedAmount,
+      multiplier,
+      streak,
+      txHash,
+      status: 'Settled' as const,
+    };
+
+    const prevHistory: any[] = profile.auraClaimHistory || [];
+    const updatedHistory = [claimRecord, ...prevHistory].slice(0, 50);
+
+    profile.auraPoints = (profile.auraPoints || 0) + claimedAmount;
+    profile.totalAuraClaimed = (profile.totalAuraClaimed || profile.auraPoints - claimedAmount || 0) + claimedAmount;
+    profile.lastClaimedAt = today;
+    profile.auraClaimHistory = updatedHistory;
+    profile.karmaScore = Math.min(1000, (profile.karmaScore || 0) + 35);
+
+    await saveUserProfile(profile);
+
+    res.json({
+      success: true,
+      claimedAmount,
+      auraPoints: profile.auraPoints,
+      totalAuraClaimed: profile.totalAuraClaimed,
+      lastClaimedAt: today,
+      claimRecord,
+      auraClaimHistory: updatedHistory,
+      karmaScore: profile.karmaScore,
+    });
+  } catch (err) {
+    console.error('[AURA] claim error:', err);
+    res.status(500).json({ error: 'Claim failed. Please try again.' });
+  }
+});
+
 // ── API Endpoint: Retrieve Direct Profile data ──
 app.get('/api/profile/:address', async (req, res) => {
   try {

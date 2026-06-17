@@ -27,6 +27,16 @@ export interface Personality {
   desc: string;
 }
 
+export interface AuraClaimRecord {
+  id: string;
+  timestamp: string;
+  amount: number;
+  multiplier: number;
+  streak: number;
+  txHash: string;
+  status: 'Settled' | 'Pending Distribution';
+}
+
 export interface User {
   username: string;
   address: string;
@@ -37,7 +47,9 @@ export interface User {
   karmaScore: number;
   personality?: string;
   auraPoints?: number;
+  totalAuraClaimed?: number;
   lastClaimedAt?: string;
+  auraClaimHistory?: AuraClaimRecord[];
   activities?: ActivityEvent[];
   categories?: { label: string; value: number; color: string; icon: string }[];
 }
