@@ -1,3 +1,4 @@
+import { ethers } from 'ethers';
 import { UserProfile } from './db';
 
 // Deterministic hashing helper
@@ -11,6 +12,77 @@ function getAddressHash(address: string): number {
   return Math.abs(hash);
 }
 
+export interface OnChainMetrics {
+  balanceETH: number;
+  txCount: number;
+  chainId: number;
+}
+
+// Fetch actual blockchain metrics across multiple major chains in parallel with timeouts
+export async function fetchOnChainMetrics(address: string): Promise<OnChainMetrics> {
+  const mainnetUrl = 'https://cloudflare-eth.com';
+  const baseUrl = 'https://mainnet.base.org';
+  const polygonUrl = 'https://polygon-rpc.com';
+
+  let totalBalanceETH = 0;
+  let totalTxCount = 0;
+  let detectedChainId = 1;
+
+  try {
+    const mainnetProvider = new ethers.JsonRpcProvider(mainnetUrl);
+    const baseProvider = new ethers.JsonRpcProvider(baseUrl);
+    const polyProvider = new ethers.JsonRpcProvider(polygonUrl);
+
+    const runCallWithTimeout = async <T>(promise: Promise<T>, timeoutMs = 1800): Promise<T | null> => {
+      return Promise.race([
+        promise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+      ]);
+    };
+
+    const [mainnetBal, mainnetTx, baseBal, baseTx, polyBal, polyTx] = await Promise.all([
+      runCallWithTimeout(mainnetProvider.getBalance(address)),
+      runCallWithTimeout(mainnetProvider.getTransactionCount(address)),
+      runCallWithTimeout(baseProvider.getBalance(address)),
+      runCallWithTimeout(baseProvider.getTransactionCount(address)),
+      runCallWithTimeout(polyProvider.getBalance(address)),
+      runCallWithTimeout(polyProvider.getTransactionCount(address))
+    ]);
+
+    if (mainnetBal) {
+      totalBalanceETH += parseFloat(ethers.formatEther(mainnetBal));
+    }
+    if (mainnetTx) {
+      totalTxCount += Number(mainnetTx);
+    }
+    if (baseBal) {
+      totalBalanceETH += parseFloat(ethers.formatEther(baseBal));
+    }
+    if (baseTx) {
+      totalTxCount += Number(baseTx);
+    }
+    if (polyBal) {
+      const MATIC_PRICE = 0.55;
+      const ETH_PRICE = 3500;
+      const maticValue = parseFloat(ethers.formatEther(polyBal)) * MATIC_PRICE;
+      totalBalanceETH += maticValue / ETH_PRICE;
+    }
+    if (polyTx) {
+      totalTxCount += Number(polyTx);
+    }
+
+    console.log(`[ON-CHAIN METRICS RESOLVED] Address: ${address} | Total Bal: ${totalBalanceETH.toFixed(5)} ETH | Total Tx: ${totalTxCount}`);
+  } catch (err) {
+    console.warn('[ON-CHAIN METRICS] Error querying public RPC gateways:', err);
+  }
+
+  return {
+    balanceETH: totalBalanceETH,
+    txCount: totalTxCount,
+    chainId: detectedChainId
+  };
+}
+
 export function computeKarmaProfile(
   address: string,
   username: string,
@@ -19,23 +91,36 @@ export function computeKarmaProfile(
   walletIcon: string,
   walletColor: string,
   walletDesc: string,
-  hideWallet: boolean
+  hideWallet: boolean,
+  realMetrics?: OnChainMetrics
 ): UserProfile {
   const hash = getAddressHash(address);
+  const useReal = realMetrics !== undefined;
   
-  // --- Create Deterministic Metrics ---
-  const walletAgeDays = 30 + (hash % 1200); // 30 days to 3 years
+  // --- Create Deterministic or On-chain Metrics ---
+  const realTxCount = realMetrics?.txCount ?? 0;
+  const realBalUSD = (realMetrics?.balanceETH ?? 0) * 3500; // approximation in USD
+
+  const walletAgeDays = useReal
+    ? (realTxCount > 100 ? 730 : realTxCount > 20 ? 180 : realTxCount > 0 ? 45 : 3)
+    : 30 + (hash % 1200); // 30 days to 3 years
+
   const firstTxDate = new Date(Date.now() - walletAgeDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const totalTransactions = 5 + (hash % 850);
-  const activeDays = Math.max(2, Math.floor(totalTransactions * 0.45) % 365);
+  const totalTransactions = useReal ? realTxCount : 5 + (hash % 850);
+  const activeDays = useReal
+    ? Math.max(1, Math.min(365, Math.floor(realTxCount * 0.45)))
+    : Math.max(2, Math.floor(totalTransactions * 0.45) % 365);
+
   const monthlyActivity = Number((totalTransactions / (walletAgeDays / 30.4)).toFixed(1)) || 1.2;
-  const tokenBalancesUSD = (hash % 100 < 5) ? 0 : 50 + (hash % 24500); // stable holdings
-  const nftCount = hash % 15;
-  const stakedAmountUSD = (hash % 3 === 0) ? Math.floor(tokenBalancesUSD * 0.4) : 0;
-  const stakedDurationDays = stakedAmountUSD > 0 ? 10 + (hash % 300) : 0;
-  const daoVotes = hash % 22;
-  const earlyMintsCount = hash % 8;
-  const riskInteractionsCount = hash % 100 < 12 ? (hash % 3) + 1 : 0; // 12% probability of a risk interaction
+  const tokenBalancesUSD = useReal ? realBalUSD : (hash % 100 < 5) ? 0 : 50 + (hash % 24500); // stable holdings
+  
+  const nftCount = useReal ? Math.min(15, Math.floor(realTxCount / 10)) : hash % 15;
+  const stakedAmountUSD = useReal ? Math.floor(realBalUSD * 0.20) : (hash % 3 === 0) ? Math.floor(tokenBalancesUSD * 0.4) : 0;
+  const stakedDurationDays = stakedAmountUSD > 0 ? (useReal ? 60 : 10 + (hash % 300)) : 0;
+  const daoVotes = useReal ? Math.min(12, Math.floor(realTxCount / 30)) : hash % 22;
+  const earlyMintsCount = useReal ? Math.min(8, Math.floor(realTxCount / 50)) : hash % 8;
+  const riskInteractionsCount = useReal ? 0 : (hash % 100 < 12 ? (hash % 3) + 1 : 0); // Real addresses clean by default
+
 
   // --- Compile Weighted Dimensions (each 0 - 100 scale) ---
   

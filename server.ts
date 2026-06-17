@@ -19,7 +19,7 @@ import {
   triggerDailyScoreUpdates,
   UserProfile
 } from './server/db';
-import { computeKarmaProfile } from './server/scoreCalculator';
+import { computeKarmaProfile, fetchOnChainMetrics } from './server/scoreCalculator';
 
 dotenv.config();
 
@@ -171,6 +171,16 @@ app.post('/api/auth/verify', async (req, res) => {
       console.warn('[DB WARNING] Failed loading profile, using fallback:', dbErr);
     }
 
+    let realMetrics: any = undefined;
+    if (!isSandboxAddress) {
+      try {
+        console.log(`[ON-CHAIN] Reading real blockchain data from RPC public gateways for ${address}...`);
+        realMetrics = await fetchOnChainMetrics(address);
+      } catch (err) {
+        console.warn('[ON-CHAIN] Failed to load on-chain metrics, using deterministic math:', err);
+      }
+    }
+
     if (!profile) {
       console.log(`[DB] Creating new ledger identity record for address: ${address}`);
       const walletId = wallet?.id || 'metamask';
@@ -187,7 +197,8 @@ app.post('/api/auth/verify', async (req, res) => {
         walletIcon,
         walletColor,
         walletDesc,
-        !!hideWallet
+        !!hideWallet,
+        realMetrics
       );
       try {
         await saveUserProfile(profile);
@@ -195,9 +206,33 @@ app.post('/api/auth/verify', async (req, res) => {
         console.warn('[DB WARNING] Failed saving new profile:', dbErr);
       }
     } else {
-      // Returning profile updates settings if edited
+      // Re-run compute to update scores based on latest real on-chain metrics!
+      const walletId = profile.wallet?.id || wallet?.id || 'metamask';
+      const walletName = profile.wallet?.name || wallet?.name || 'MetaMask';
+      const walletIcon = profile.wallet?.icon || wallet?.icon || '🦊';
+      const walletColor = profile.wallet?.color || wallet?.color || '#f6851b';
+      const walletDesc = profile.wallet?.desc || wallet?.desc || 'Browser Wallet';
+
+      const updatedProfile = computeKarmaProfile(
+        address,
+        username,
+        walletId,
+        walletName,
+        walletIcon,
+        walletColor,
+        walletDesc,
+        !!hideWallet,
+        realMetrics
+      );
+      
+      // Sync parameters and new scoring indices
       profile.username = username;
       profile.hideWallet = !!hideWallet;
+      profile.karmaScore = updatedProfile.karmaScore;
+      profile.categories = updatedProfile.categories;
+      profile.scores = updatedProfile.scores;
+      profile.metrics = updatedProfile.metrics;
+
       try {
         await saveUserProfile(profile);
       } catch (dbErr) {

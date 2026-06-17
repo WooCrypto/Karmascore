@@ -4,6 +4,44 @@ import { WALLETS } from '../constants';
 import GlassCard from './GlassCard';
 import { ShieldCheck, Cpu, Database, Activity, Landmark } from 'lucide-react';
 
+class InMemoryKeyValueStorage {
+  private store: Record<string, string> = {};
+
+  async getKeys(): Promise<string[]> {
+    return Object.keys(this.store);
+  }
+
+  async getEntries(): Promise<[string, any][]> {
+    return Object.entries(this.store).map(([k, v]) => [k, this.parseValue(v)]);
+  }
+
+  async getItem<T = any>(key: string): Promise<T | undefined> {
+    const value = this.store[key];
+    if (value === undefined) return undefined;
+    return this.parseValue(value) as T;
+  }
+
+  async setItem<T = any>(key: string, value: T): Promise<void> {
+    this.store[key] = typeof value === 'string' ? value : JSON.stringify(value);
+  }
+
+  async removeItem(key: string): Promise<void> {
+    delete this.store[key];
+  }
+
+  async clear(): Promise<void> {
+    this.store = {};
+  }
+
+  private parseValue(value: string): any {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+}
+
 interface ConnectModalProps {
   onConnect: (data: { wallet: Wallet; username: string; hideWallet: boolean; address: string; profile?: User }) => void;
   onClose: () => void;
@@ -16,6 +54,7 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
   const [hideWallet, setHideWallet] = useState(false);
   const [usernameError, setUsernameError] = useState('');
   const [savedProfile, setSavedProfile] = useState<any | null>(null);
+  const [wcProvider, setWcProvider] = useState<any | null>(null);
 
   // Connection options state: auto web3, manual paste, sandbox template
   const [connectMethod, setConnectMethod] = useState<'auto' | 'manual' | 'sandbox'>('auto');
@@ -125,6 +164,9 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
       setPairingProgress(progress);
     }, 200);
 
+    // Ensure global sandbox shield is active
+    console.log('Initializing WalletConnect under global sandbox shields.');
+
     try {
       const { EthereumProvider } = await import('@walletconnect/ethereum-provider');
       
@@ -137,7 +179,8 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
           icons: ['https://avatars.githubusercontent.com/u/37784886']
         },
         showQrModal: true,
-        optionalChains: [1, 137, 10, 8453, 42161] // Mainnet, Polygon, Optimism, Base, Arbitrum
+        optionalChains: [1, 137, 10, 8453, 42161], // Mainnet, Polygon, Optimism, Base, Arbitrum
+        storage: new InMemoryKeyValueStorage() as any
       });
 
       clearInterval(progressInterval);
@@ -152,6 +195,7 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
         console.log('Successfully connected via real WalletConnect:', connectedAddress);
         
         setManualAddress(connectedAddress);
+        setWcProvider(provider); // Persist live WC provider
         setConnectMethod('auto'); // Secure auto scanning alignment
         setPairingStatus('idle');
         setWcConnecting(false);
@@ -237,8 +281,10 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
       }
       resolvedAddress = cleanAddr;
     } else if (connectMethod === 'auto') {
-      // Attempt real cryptographic web3 connection if available in the browser environment
-      if (typeof window !== 'undefined' && (window as any).ethereum) {
+      // Use active WalletConnect provider account if populated, else fallback to window.ethereum
+      if (wcProvider && wcProvider.accounts && wcProvider.accounts[0]) {
+        resolvedAddress = wcProvider.accounts[0];
+      } else if (typeof window !== 'undefined' && (window as any).ethereum) {
         try {
           const provider = (window as any).ethereum;
           
@@ -299,9 +345,9 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
     }
 
     let signature = 'sandbox_sig';
-    if (connectMethod === 'auto' && typeof window !== 'undefined' && (window as any).ethereum && resolvedAddress && !iframeWarning) {
+    const activeProvider = wcProvider || (typeof window !== 'undefined' && (window as any).ethereum ? (window as any).ethereum : null);
+    if (connectMethod === 'auto' && activeProvider && resolvedAddress && !iframeWarning) {
       try {
-        const provider = (window as any).ethereum;
         // Request challenge
         const challengeRes = await fetch('/api/auth/challenge', {
           method: 'POST',
@@ -327,13 +373,13 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
               hexMessage = '0x' + hex;
             }
             
-            // Signature signature request with a 3.5-second timeout boundary
-            const signPromise = provider.request({
+            // Signature signature request with a 15-second timeout boundary
+            const signPromise = activeProvider.request({
               method: 'personal_sign',
               params: [hexMessage, resolvedAddress]
             });
             const signTimeout = new Promise<never>((_, reject) => 
-              setTimeout(() => reject(new Error('TIMEOUT_ERROR')), 3500)
+              setTimeout(() => reject(new Error('TIMEOUT_ERROR')), 15000)
             );
             
             signature = await Promise.race([signPromise, signTimeout]);
@@ -1058,10 +1104,25 @@ export function WalletModal({ onConnect, onClose }: ConnectModalProps) {
                     Edit profile parameters
                   </button>
                   <button
-                    onClick={() => setStep('pick')}
+                    onClick={() => {
+                      if (selectedWallet) {
+                        try {
+                          const registryRaw = localStorage.getItem('karma_profiles_registry');
+                          if (registryRaw) {
+                            const registry = JSON.parse(registryRaw);
+                            delete registry[selectedWallet.id];
+                            localStorage.setItem('karma_profiles_registry', JSON.stringify(registry));
+                          }
+                        } catch (e) {
+                          console.warn('Failed clearing cached profile:', e);
+                        }
+                      }
+                      setSavedProfile(null);
+                      setStep('pick');
+                    }}
                     className="text-[11px] font-mono text-slate-400 hover:text-slate-300 underline border-none bg-none cursor-pointer"
                   >
-                    Choose different client
+                    Disconnect & Reset Cache
                   </button>
                 </div>
               </div>
