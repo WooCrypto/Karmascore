@@ -18,7 +18,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import GlassCard from './GlassCard';
 
-export default function ScoreChecker() {
+interface ScoreCheckerProps {
+  user?: any;
+  onShowConnect?: () => void;
+}
+
+export default function ScoreChecker({ user, onShowConnect }: ScoreCheckerProps = {}) {
   const [wallet, setWallet] = useState('');
   const [xUser, setXUser] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -37,6 +42,85 @@ export default function ScoreChecker() {
     badges: string[];
   } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Keep input fields in sync when a real user connects
+  useEffect(() => {
+    if (user) {
+      const activeAddress = user.address || '';
+      const activeUsername = user.username ? `@${user.username}` : '';
+      setWallet(activeAddress);
+      setXUser(activeUsername);
+      
+      // Run automatic dramatic analysis for the connected user
+      setIsAnalyzing(true);
+      setAnalysisStep(0);
+      setResults(null);
+      
+      decryptAnimateText(activeAddress, activeUsername || 'karma_pioneer', async () => {
+        let liveProfile: any = null;
+        try {
+          const res = await fetch(`/api/profile/${activeAddress.toLowerCase()}`);
+          if (res.ok) {
+            liveProfile = await res.json();
+          }
+        } catch (e) {
+          console.warn('Live profile fetch failed:', e);
+        }
+
+        const score = liveProfile?.karmaScore || user.karmaScore || 680;
+        const rankPercent = ((1000 - score) / 700 * 9.5 + 0.1).toFixed(2);
+        const rank = `Top ${rankPercent}%`;
+        const walletAge = liveProfile?.metrics?.walletAgeDays || user.metrics?.walletAgeDays || 180;
+        const govIndex = liveProfile?.scores?.governance || user.scores?.governance || 65;
+        const velocity = liveProfile?.scores?.txQuality || user.scores?.txQuality || 70;
+        const multiplier = parseFloat(((score - 300) / 400 + 1.2).toFixed(2));
+        const tokensAllocated = Math.round((score - 300) * multiplier * 3);
+        
+        let tierName = 'Strong';
+        let tierColor = '#38bdf8';
+        let badgeEmoji = '💎';
+        let badges = ['Active Validator Sign', 'Hold Mastery Streak'];
+
+        if (score >= 880) {
+          tierName = 'Legendary';
+          tierColor = '#a78bfa';
+          badgeEmoji = '👑';
+          badges = ['Sovereign Whale Guild', 'Consensus Guardian', 'Alpha Ambassador'];
+        } else if (score >= 750) {
+          tierName = 'Trusted';
+          tierColor = '#14F195';
+          badgeEmoji = '✨';
+          badges = ['High Velocity Spend Loop', 'DeFi Vault Master'];
+        } else if (score < 620) {
+          tierName = 'Building';
+          tierColor = '#fbbf24';
+          badgeEmoji = '🌱';
+          badges = ['Pioneer Explorer Status'];
+        }
+
+        setResults({
+          score,
+          rank,
+          walletAge,
+          govIndex,
+          velocity,
+          multiplier,
+          tokensAllocated,
+          tierName,
+          tierColor,
+          badgeEmoji,
+          badges
+        });
+        setIsAnalyzing(false);
+      });
+    } else {
+      const defaultWallet = 'satoshipatience.sol';
+      const defaultX = 'SatoshiPatient';
+      setWallet(defaultWallet);
+      setXUser(defaultX);
+      setResults(computeDeterministicScore(defaultWallet, defaultX));
+    }
+  }, [user]);
 
   // Reusable deterministic calculation engine
   const computeDeterministicScore = (walletAddress: string, xHandle: string) => {
@@ -103,15 +187,6 @@ export default function ScoreChecker() {
       badges
     };
   };
-
-  // Pre-load default profile on first render so score shows up on first load/refresh
-  useEffect(() => {
-    const defaultWallet = 'satoshipatience.sol';
-    const defaultX = 'SatoshiPatient';
-    setWallet(defaultWallet);
-    setXUser(defaultX);
-    setResults(computeDeterministicScore(defaultWallet, defaultX));
-  }, []);
 
   const [animatedScore, setAnimatedScore] = useState(300);
   const [animatedTokens, setAnimatedTokens] = useState(0);
@@ -244,12 +319,72 @@ export default function ScoreChecker() {
       ];
 
       let currentStep = 0;
-      const scanInterval = setInterval(() => {
+      const scanInterval = setInterval(async () => {
         currentStep += 1;
         setAnalysisStep(currentStep);
         if (currentStep >= steps.length) {
           clearInterval(scanInterval);
-          setResults(computeDeterministicScore(wallet, xUser));
+          
+          let liveProfile: any = null;
+          if (/^0x[a-fA-F0-9]{40}$/.test(wallet.trim())) {
+            try {
+              const res = await fetch(`/api/profile/${wallet.trim().toLowerCase()}`);
+              if (res.ok) {
+                liveProfile = await res.json();
+              }
+            } catch (e) {
+              console.warn('Live profile fetch failed:', e);
+            }
+          }
+
+          if (liveProfile && !liveProfile.error) {
+            const score = liveProfile.karmaScore || 650;
+            const rankPercent = ((1000 - score) / 700 * 9.5 + 0.1).toFixed(2);
+            const rank = `Top ${rankPercent}%`;
+            const walletAge = liveProfile.metrics?.walletAgeDays || 180;
+            const govIndex = liveProfile.scores?.governance || 65;
+            const velocity = liveProfile.scores?.txQuality || 70;
+            const multiplier = parseFloat(((score - 300) / 400 + 1.2).toFixed(2));
+            const tokensAllocated = Math.round((score - 300) * multiplier * 3);
+            
+            let tierName = 'Strong';
+            let tierColor = '#38bdf8';
+            let badgeEmoji = '💎';
+            let badges = ['Active Validator Sign', 'Hold Mastery Streak'];
+
+            if (score >= 880) {
+              tierName = 'Legendary';
+              tierColor = '#a78bfa';
+              badgeEmoji = '👑';
+              badges = ['Sovereign Whale Guild', 'Consensus Guardian', 'Alpha Ambassador'];
+            } else if (score >= 750) {
+              tierName = 'Trusted';
+              tierColor = '#14F195';
+              badgeEmoji = '✨';
+              badges = ['High Velocity Spend Loop', 'DeFi Vault Master'];
+            } else if (score < 620) {
+              tierName = 'Building';
+              tierColor = '#fbbf24';
+              badgeEmoji = '🌱';
+              badges = ['Pioneer Explorer Status'];
+            }
+
+            setResults({
+              score,
+              rank,
+              walletAge,
+              govIndex,
+              velocity,
+              multiplier,
+              tokensAllocated,
+              tierName,
+              tierColor,
+              badgeEmoji,
+              badges
+            });
+          } else {
+            setResults(computeDeterministicScore(wallet, xUser));
+          }
           setIsAnalyzing(false);
         }
       }, 550); // Fluid, dramatic pacing
@@ -396,6 +531,22 @@ export default function ScoreChecker() {
                     </>
                   )}
                 </button>
+
+                {/* Direct Link option for seamless onboarding inside checker */}
+                {!user && onShowConnect ? (
+                  <button
+                    onClick={onShowConnect}
+                    type="button"
+                    className="w-full py-2.5 rounded-xl border border-dashed border-[#a78bfa]/40 hover:border-[#a78bfa]/80 bg-[#a78bfa]/5 hover:bg-[#a78bfa]/10 text-[#c084fc] font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 mt-2"
+                  >
+                    <span>🔌</span> Link My Live Wallet Connection
+                  </button>
+                ) : user ? (
+                  <div className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-[10.5px] text-[#c084fc] font-mono mt-2 select-none">
+                    <span className="font-bold flex items-center gap-1">🟢 Live Connected Wallet Verified</span>
+                    <span className="font-bold">@{user.username}</span>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="space-y-4">

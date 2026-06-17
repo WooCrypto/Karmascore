@@ -86,22 +86,212 @@ if (typeof window !== 'undefined') {
   // Patch Storage.prototype so direct Storage calls are protected
   patchStoragePrototype();
 
-  const shieldProperty = (name: 'localStorage' | 'sessionStorage') => {
+  const makeSafeStorageProxy = (name: 'localStorage' | 'sessionStorage', realStorage: any) => {
     const fallbackStore = createInMemoryStorage();
+    const propCache: Record<string, string> = {};
+
+    // Use a fully configurable buffer object as Proxy target to prevent ReadOnly/Invariant errors in strict mode
+    const targetBuffer: Record<string, any> = {};
+
+    return new Proxy(targetBuffer, {
+      get(target, prop, receiver) {
+        if (prop === 'length') {
+          try {
+            if (realStorage) {
+              return realStorage.length;
+            }
+          } catch (e) {}
+          return fallbackStore.length;
+        }
+
+        if (prop === 'getItem') {
+          return (key: string) => {
+            try {
+              if (realStorage) {
+                const val = realStorage.getItem(key);
+                if (val !== null) return val;
+              }
+            } catch (e) {}
+            return fallbackStore.getItem(key) ?? propCache[key] ?? null;
+          };
+        }
+
+        if (prop === 'setItem') {
+          return (key: string, value: any) => {
+            const strValue = String(value);
+            fallbackStore.setItem(key, strValue);
+            propCache[key] = strValue;
+            try {
+              if (realStorage) {
+                realStorage.setItem(key, strValue);
+              }
+            } catch (e) {
+              console.warn(`SafeStorage Proxy intercepted setItem error for ${key}:`, e);
+            }
+          };
+        }
+
+        if (prop === 'removeItem') {
+          return (key: string) => {
+            fallbackStore.removeItem(key);
+            delete propCache[key];
+            try {
+              if (realStorage) {
+                realStorage.removeItem(key);
+              }
+            } catch (e) {}
+          };
+        }
+
+        if (prop === 'clear') {
+          return () => {
+            fallbackStore.clear();
+            for (const k in propCache) {
+              delete propCache[k];
+            }
+            try {
+              if (realStorage) {
+                realStorage.clear();
+              }
+            } catch (e) {}
+          };
+        }
+
+        if (prop === 'key') {
+          return (index: number) => {
+            try {
+              if (realStorage) {
+                return realStorage.key(index);
+              }
+            } catch (e) {}
+            return fallbackStore.key(index);
+          };
+        }
+
+        if (typeof prop === 'string') {
+          const sourceObj = realStorage || fallbackStore;
+          if (prop in sourceObj && typeof sourceObj[prop] === 'function') {
+            return sourceObj[prop].bind(sourceObj);
+          }
+
+          try {
+            if (realStorage && prop in realStorage) {
+              const val = realStorage[prop];
+              if (val !== undefined) return val;
+            }
+          } catch (e) {}
+
+          const fallbackVal = fallbackStore.getItem(prop);
+          if (fallbackVal !== null) return fallbackVal;
+          return propCache[prop];
+        }
+
+        return Reflect.get(target, prop, receiver);
+      },
+
+      set(target, prop, value, receiver) {
+        if (typeof prop === 'string') {
+          const strValue = String(value);
+          fallbackStore.setItem(prop, strValue);
+          propCache[prop] = strValue;
+          target[prop] = strValue;
+
+          try {
+            if (realStorage) {
+              realStorage[prop] = strValue;
+            }
+          } catch (e) {
+            console.warn(`SafeStorage Proxy swallowed property assignment error for ${prop}:`, e);
+          }
+          return true;
+        }
+        return Reflect.set(target, prop, value, receiver);
+      },
+
+      defineProperty(target, prop, descriptor) {
+        try {
+          Object.defineProperty(target, prop, descriptor);
+        } catch (e) {}
+        try {
+          if (realStorage) {
+            Object.defineProperty(realStorage, prop, descriptor);
+          }
+        } catch (e) {}
+        return true;
+      },
+
+      getOwnPropertyDescriptor(target, prop) {
+        try {
+          if (realStorage) {
+            const desc = Reflect.getOwnPropertyDescriptor(realStorage, prop);
+            if (desc) {
+              desc.configurable = true;
+              return desc;
+            }
+          }
+        } catch (e) {}
+
+        const targetDesc = Reflect.getOwnPropertyDescriptor(target, prop);
+        if (targetDesc) {
+          targetDesc.configurable = true;
+          return targetDesc;
+        }
+
+        if (typeof prop === 'string' && prop in propCache) {
+          return {
+            value: propCache[prop],
+            writable: true,
+            enumerable: true,
+            configurable: true
+          };
+        }
+        return undefined;
+      },
+
+      ownKeys(target) {
+        const keys = new Set<string | symbol>();
+        try {
+          if (realStorage) {
+            Reflect.ownKeys(realStorage).forEach(k => keys.add(k));
+          }
+        } catch (e) {}
+        
+        Reflect.ownKeys(target).forEach(k => keys.add(k));
+        Object.keys(propCache).forEach(k => keys.add(k));
+        return Array.from(keys);
+      },
+
+      deleteProperty(target, prop) {
+        if (typeof prop === 'string') {
+          delete target[prop];
+          delete propCache[prop];
+          fallbackStore.removeItem(prop);
+          try {
+            if (realStorage) {
+              delete realStorage[prop];
+            }
+          } catch (e) {}
+        }
+        return true;
+      },
+
+      has(target, prop) {
+        return prop in target || (typeof prop === 'string' && prop in propCache) || (realStorage ? prop in realStorage : false);
+      }
+    });
+  };
+
+  const shieldProperty = (name: 'localStorage' | 'sessionStorage') => {
     let originalInstance: any = null;
 
     try {
       originalInstance = window[name];
-      if (originalInstance) {
-        originalInstance.setItem('__sandbox_test_write', '1');
-        originalInstance.removeItem('__sandbox_test_write');
-      }
     } catch (err) {
       originalInstance = null;
     }
 
-    const activeInstance = originalInstance || fallbackStore;
-    let currentValue = activeInstance;
+    const safeProxy = makeSafeStorageProxy(name, originalInstance);
+    let currentValue = safeProxy;
 
     // 1. Shadow on Window.prototype (where default getters usually reside)
     if (typeof Window !== 'undefined' && Window.prototype) {

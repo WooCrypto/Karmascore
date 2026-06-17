@@ -9,6 +9,7 @@ import NavigationVideo from './NavigationVideo';
 interface LandingProps {
   onShowConnect: () => void;
   onShowManifesto: () => void;
+  user?: any;
 }
 
 // Custom 2D Canvas ambient networking visualizer
@@ -85,7 +86,7 @@ function ParticleField() {
   return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none opacity-60" />;
 }
 
-export default function Landing({ onShowConnect, onShowManifesto }: LandingProps) {
+export default function Landing({ onShowConnect, onShowManifesto, user }: LandingProps) {
   const [sliderScore, setSliderScore] = useState<number>(780);
   const [showFirstTimeHelp, setShowFirstTimeHelp] = useState<boolean>(false);
   const [activeStep, setActiveStep] = useState<number>(1);
@@ -489,7 +490,7 @@ export default function Landing({ onShowConnect, onShowManifesto }: LandingProps
 
       {/* VIRAL SCORE CHECK PANEL AND NARRATIVE */}
       <div className="border-t border-b border-white/[0.04] bg-[#05050b]/40 py-12">
-        <ScoreChecker />
+        <ScoreChecker user={user} onShowConnect={onShowConnect} />
       </div>
 
       {/* FAMILIAR COMPARISON: FICO vs. Karma reputability translation table */}

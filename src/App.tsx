@@ -318,6 +318,7 @@ export default function App() {
           <Landing 
             onShowConnect={() => setShowConnect(true)} 
             onShowManifesto={() => setShowManifesto(true)} 
+            user={user}
           />
         )}
         
